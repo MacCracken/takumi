@@ -1,0 +1,25 @@
+[package]
+name = "takumi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+description = "Takumi — package build system for AGNOS (.ark packages from TOML recipes)"
+homepage = "https://github.com/MacCracken/takumi"
+repository = "https://github.com/MacCracken/takumi"
+readme = "README.md"
+keywords = ["build", "package", "recipe", "toml"]
+categories = ["os", "development-tools::build-utils"]
+exclude = [".claude/", ".github/", "docs/", "scripts/"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+toml = "0.8"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
