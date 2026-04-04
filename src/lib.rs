@@ -4,11 +4,11 @@
 //! `.ark` packages. Named after the Japanese word for "master craftsman" —
 //! takumi crafts every package in AGNOS with precision.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -88,6 +88,7 @@ pub struct SecurityFlags {
 /// Individual compiler hardening flags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum HardeningFlag {
     Pie,
     Relro,
@@ -178,6 +179,7 @@ pub struct ArkFileEntry {
 
 /// Type of file stored in an `.ark` package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ArkFileType {
     /// A regular file.
     Regular,
@@ -205,7 +207,7 @@ impl fmt::Display for ArkFileType {
 // ---------------------------------------------------------------------------
 
 /// Runtime context for a single package build.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildContext {
     pub recipe: BuildRecipe,
     pub source_dir: PathBuf,
@@ -217,6 +219,7 @@ pub struct BuildContext {
 
 /// Current status of a build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum BuildStatus {
     Pending,
     Downloading,
@@ -313,9 +316,12 @@ impl TakumiBuildSystem {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            let meta = std::fs::symlink_metadata(&path)?;
+            if meta.is_dir() {
                 self.load_recipes_from_dir(&path, count)?;
-            } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            } else if !meta.is_symlink()
+                && path.extension().and_then(|e| e.to_str()) == Some("toml")
+            {
                 match Self::load_recipe(&path) {
                     Ok(recipe) => {
                         debug!(name = %recipe.package.name, "loaded recipe from dir");
@@ -419,6 +425,32 @@ impl TakumiBuildSystem {
             warnings.push("release number is 0, should start at 1".to_string());
         }
 
+        // Validate dependency names for path traversal and injection safety
+        for dep in recipe
+            .depends
+            .runtime
+            .iter()
+            .chain(recipe.depends.build.iter())
+        {
+            if dep.contains('/')
+                || dep.contains('\0')
+                || dep.contains("..")
+                || dep.contains(' ')
+                || dep.contains('\\')
+            {
+                bail!("dependency '{}' contains unsafe characters", dep);
+            }
+            if !dep
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+            {
+                bail!(
+                    "dependency '{}' contains invalid characters; only alphanumeric, hyphens, underscores, and dots are allowed",
+                    dep
+                );
+            }
+        }
+
         // Check for version format (simple semver-ish check)
         let parts: Vec<&str> = recipe.package.version.split('.').collect();
         if parts.len() < 2 {
@@ -434,6 +466,8 @@ impl TakumiBuildSystem {
     /// Resolve build order using topological sort on build dependencies.
     /// Returns packages in the order they should be built. Detects cycles.
     pub fn resolve_build_order(&self, packages: &[String]) -> Result<Vec<String>> {
+        let package_set: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+
         // Build adjacency list from loaded recipes
         let mut adj: HashMap<String, Vec<String>> = HashMap::new();
         for name in packages {
@@ -442,7 +476,7 @@ impl TakumiBuildSystem {
                     .depends
                     .build
                     .iter()
-                    .filter(|d| packages.contains(d))
+                    .filter(|d| package_set.contains(d.as_str()))
                     .cloned()
                     .collect();
                 adj.insert(name.clone(), build_deps);
@@ -510,6 +544,7 @@ impl TakumiBuildSystem {
     }
 
     /// Convert security flags to GCC CFLAGS string.
+    #[must_use]
     pub fn generate_cflags(flags: &SecurityFlags) -> String {
         let mut parts = Vec::new();
 
@@ -537,6 +572,7 @@ impl TakumiBuildSystem {
     /// Avoids redundant flags: if `FullRelro` is present, `Relro` (already
     /// implied by `-Wl,-z,relro,-z,now`) and `Bindnow` (already implied by
     /// the `-z,now` portion) are skipped.
+    #[must_use]
     pub fn generate_ldflags(flags: &SecurityFlags) -> String {
         let mut parts = Vec::new();
         let has_full_relro = flags.hardening.contains(&HardeningFlag::FullRelro);
@@ -600,18 +636,27 @@ impl TakumiBuildSystem {
     }
 
     /// Look up a loaded recipe by name.
+    #[must_use]
     pub fn get_recipe(&self, name: &str) -> Option<&BuildRecipe> {
         self.loaded_recipes.get(name)
     }
 
     /// Number of loaded recipes.
+    #[must_use]
     pub fn recipe_count(&self) -> usize {
         self.loaded_recipes.len()
     }
 
     /// Access the build log.
+    #[must_use]
     pub fn build_log(&self) -> &[BuildLogEntry] {
         &self.build_log
+    }
+
+    /// Mutable access to the loaded recipes map — intended for testing and
+    /// benchmark setup where recipes are constructed in-memory.
+    pub fn loaded_recipes_mut(&mut self) -> &mut HashMap<String, BuildRecipe> {
+        &mut self.loaded_recipes
     }
 
     // -----------------------------------------------------------------------
@@ -695,12 +740,22 @@ impl TakumiBuildSystem {
 // Utility
 // ---------------------------------------------------------------------------
 
+/// Hex lookup table for fast byte-to-hex conversion.
+const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
+
 /// Compute hex-encoded SHA-256 of bytes.
+#[must_use]
 fn hex_sha256(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
-    result.iter().map(|b| format!("{:02x}", b)).collect()
+    let mut hex = Vec::with_capacity(64);
+    for &byte in result.as_slice() {
+        hex.push(HEX_TABLE[(byte >> 4) as usize]);
+        hex.push(HEX_TABLE[(byte & 0x0f) as usize]);
+    }
+    // SAFETY: HEX_TABLE only contains ASCII bytes
+    unsafe { String::from_utf8_unchecked(hex) }
 }
 
 // ---------------------------------------------------------------------------
@@ -868,10 +923,12 @@ sha256 = "deadbeef"
         recipe.package.name = String::new();
         let result = TakumiBuildSystem::validate_recipe(&recipe);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("empty package name"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("empty package name")
+        );
     }
 
     #[test]
@@ -1174,6 +1231,14 @@ sha256 = "abc123"
             PathBuf::from("/tmp/output"),
         );
         for (name, build_deps) in recipes {
+            let deps = format!(
+                "[{}]",
+                build_deps
+                    .iter()
+                    .map(|d| format!("\"{}\"", d))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             let recipe: BuildRecipe = toml::from_str(&format!(
                 r#"
 [package]
@@ -1192,15 +1257,6 @@ build = {deps}
 [build]
 make = "make"
 "#,
-                name = name,
-                deps = format!(
-                    "[{}]",
-                    build_deps
-                        .iter()
-                        .map(|d| format!("\"{}\"", d))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
             ))
             .unwrap();
             sys.loaded_recipes.insert(name.to_string(), recipe);
@@ -1526,10 +1582,12 @@ make = "make"
         recipe.package.name = "../etc/passwd".to_string();
         let result = TakumiBuildSystem::validate_recipe(&recipe);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unsafe characters"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe characters")
+        );
     }
 
     #[test]
@@ -1538,10 +1596,12 @@ make = "make"
         recipe.package.name = "foo..bar".to_string();
         let result = TakumiBuildSystem::validate_recipe(&recipe);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unsafe characters"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe characters")
+        );
     }
 
     #[test]
@@ -1576,10 +1636,12 @@ make = "make"
         recipe.source.url = "file:///etc/passwd".to_string();
         let result = TakumiBuildSystem::validate_recipe(&recipe);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported scheme"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported scheme")
+        );
     }
 
     #[test]
@@ -1588,10 +1650,12 @@ make = "make"
         recipe.source.url = "ftp://mirror.example.com/foo.tar.gz".to_string();
         let result = TakumiBuildSystem::validate_recipe(&recipe);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported scheme"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported scheme")
+        );
     }
 
     #[test]
@@ -1672,5 +1736,299 @@ make = "make"
         assert_eq!(count, 2);
         assert!(sys.get_recipe("hello").is_some());
         assert!(sys.get_recipe("openssl").is_some()); // FULL_RECIPE has name "openssl"
+    }
+
+    // -- Serde roundtrip tests (CLAUDE.md requirement) -------------------------
+
+    #[test]
+    fn build_recipe_serde_roundtrip() {
+        let recipe: BuildRecipe = toml::from_str(FULL_RECIPE).unwrap();
+        let json = serde_json::to_string(&recipe).unwrap();
+        let deserialized: BuildRecipe = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.package.name, recipe.package.name);
+        assert_eq!(deserialized.package.version, recipe.package.version);
+        assert_eq!(deserialized.source.url, recipe.source.url);
+        assert_eq!(deserialized.depends.runtime, recipe.depends.runtime);
+        assert_eq!(deserialized.security.hardening, recipe.security.hardening);
+    }
+
+    #[test]
+    fn package_metadata_serde_roundtrip() {
+        let meta = PackageMetadata {
+            name: "test-pkg".to_string(),
+            version: "2.1.0".to_string(),
+            description: "A test".to_string(),
+            license: "MIT".to_string(),
+            groups: vec!["base".to_string()],
+            release: 3,
+            arch: Some("x86_64".to_string()),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let de: PackageMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.name, meta.name);
+        assert_eq!(de.release, meta.release);
+        assert_eq!(de.arch, meta.arch);
+    }
+
+    #[test]
+    fn source_spec_serde_roundtrip() {
+        let spec = SourceSpec {
+            url: "https://example.com/foo.tar.gz".to_string(),
+            sha256: "abcd1234".to_string(),
+            patches: vec!["fix.patch".to_string()],
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let de: SourceSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.url, spec.url);
+        assert_eq!(de.patches, spec.patches);
+    }
+
+    #[test]
+    fn dependency_spec_serde_roundtrip() {
+        let spec = DependencySpec {
+            runtime: vec!["glibc".to_string()],
+            build: vec!["gcc".to_string(), "make".to_string()],
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let de: DependencySpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.runtime, spec.runtime);
+        assert_eq!(de.build, spec.build);
+    }
+
+    #[test]
+    fn build_steps_serde_roundtrip() {
+        let steps = BuildSteps {
+            configure: Some("./configure".to_string()),
+            make: Some("make".to_string()),
+            check: None,
+            install: Some("make install".to_string()),
+            pre_build: Some("autoreconf".to_string()),
+            post_install: None,
+        };
+        let json = serde_json::to_string(&steps).unwrap();
+        let de: BuildSteps = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.configure, steps.configure);
+        assert_eq!(de.pre_build, steps.pre_build);
+        assert_eq!(de.check, steps.check);
+    }
+
+    #[test]
+    fn security_flags_serde_roundtrip() {
+        let flags = SecurityFlags {
+            hardening: vec![HardeningFlag::Pie, HardeningFlag::FullRelro],
+            cflags: Some("-O2".to_string()),
+            ldflags: None,
+        };
+        let json = serde_json::to_string(&flags).unwrap();
+        let de: SecurityFlags = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.hardening, flags.hardening);
+        assert_eq!(de.cflags, flags.cflags);
+    }
+
+    #[test]
+    fn hardening_flag_serde_roundtrip() {
+        let flags = vec![
+            HardeningFlag::Pie,
+            HardeningFlag::Relro,
+            HardeningFlag::FullRelro,
+            HardeningFlag::Fortify,
+            HardeningFlag::StackProtector,
+            HardeningFlag::Bindnow,
+        ];
+        let json = serde_json::to_string(&flags).unwrap();
+        let de: Vec<HardeningFlag> = serde_json::from_str(&json).unwrap();
+        assert_eq!(de, flags);
+    }
+
+    #[test]
+    fn ark_package_serde_roundtrip() {
+        let pkg = ArkPackage {
+            manifest: ArkManifest {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+                release: 1,
+                description: "test".to_string(),
+                arch: "x86_64".to_string(),
+                size_installed: 1024,
+                build_date: Utc::now(),
+                builder: "takumi".to_string(),
+                source_url: "https://example.com".to_string(),
+                source_hash: "abc".to_string(),
+                license: "MIT".to_string(),
+                groups: vec![],
+                depends: vec![],
+            },
+            signature: None,
+            files: vec![ArkFileEntry {
+                path: "/usr/bin/test".to_string(),
+                sha256: "deadbeef".to_string(),
+                size: 512,
+                file_type: ArkFileType::Regular,
+            }],
+            data_hash: "cafebabe".to_string(),
+        };
+        let json = serde_json::to_string(&pkg).unwrap();
+        let de: ArkPackage = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.manifest.name, pkg.manifest.name);
+        assert_eq!(de.files.len(), 1);
+        assert_eq!(de.data_hash, pkg.data_hash);
+    }
+
+    #[test]
+    fn ark_file_entry_serde_roundtrip() {
+        let entries = vec![
+            ArkFileEntry {
+                path: "/usr/bin/hello".to_string(),
+                sha256: "abc123".to_string(),
+                size: 4096,
+                file_type: ArkFileType::Regular,
+            },
+            ArkFileEntry {
+                path: "/usr/lib".to_string(),
+                sha256: String::new(),
+                size: 0,
+                file_type: ArkFileType::Directory,
+            },
+            ArkFileEntry {
+                path: "/usr/lib/libfoo.so".to_string(),
+                sha256: String::new(),
+                size: 0,
+                file_type: ArkFileType::Symlink("libfoo.so.1".to_string()),
+            },
+            ArkFileEntry {
+                path: "/etc/app.conf".to_string(),
+                sha256: "def456".to_string(),
+                size: 128,
+                file_type: ArkFileType::Config,
+            },
+        ];
+        let json = serde_json::to_string(&entries).unwrap();
+        let de: Vec<ArkFileEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.len(), 4);
+        assert_eq!(
+            de[2].file_type,
+            ArkFileType::Symlink("libfoo.so.1".to_string())
+        );
+        assert_eq!(de[3].file_type, ArkFileType::Config);
+    }
+
+    #[test]
+    fn build_status_serde_roundtrip() {
+        let statuses = vec![
+            BuildStatus::Pending,
+            BuildStatus::Downloading,
+            BuildStatus::Building,
+            BuildStatus::Complete,
+            BuildStatus::Failed("out of memory".to_string()),
+        ];
+        let json = serde_json::to_string(&statuses).unwrap();
+        let de: Vec<BuildStatus> = serde_json::from_str(&json).unwrap();
+        assert_eq!(de, statuses);
+    }
+
+    #[test]
+    fn build_log_entry_serde_roundtrip() {
+        let entry = BuildLogEntry {
+            package: "hello".to_string(),
+            status: BuildStatus::Complete,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_secs: Some(42),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let de: BuildLogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.package, entry.package);
+        assert_eq!(de.status, entry.status);
+        assert_eq!(de.duration_secs, Some(42));
+    }
+
+    #[test]
+    fn build_context_serde_roundtrip() {
+        let recipe: BuildRecipe = toml::from_str(MINIMAL_RECIPE).unwrap();
+        let ctx = BuildContext {
+            recipe,
+            source_dir: PathBuf::from("/tmp/src"),
+            build_dir: PathBuf::from("/tmp/build"),
+            package_dir: PathBuf::from("/tmp/pkg"),
+            output_dir: PathBuf::from("/tmp/out"),
+            arch: "x86_64".to_string(),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let de: BuildContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.arch, ctx.arch);
+        assert_eq!(de.source_dir, ctx.source_dir);
+    }
+
+    // -- Dependency name validation tests --------------------------------------
+
+    #[test]
+    fn validate_dependency_name_with_slash_rejected() {
+        let mut recipe: BuildRecipe = toml::from_str(MINIMAL_RECIPE).unwrap();
+        recipe.depends.build = vec!["../evil".to_string()];
+        let result = TakumiBuildSystem::validate_recipe(&recipe);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe characters")
+        );
+    }
+
+    #[test]
+    fn validate_dependency_name_with_space_rejected() {
+        let mut recipe: BuildRecipe = toml::from_str(MINIMAL_RECIPE).unwrap();
+        recipe.depends.runtime = vec!["foo bar".to_string()];
+        let result = TakumiBuildSystem::validate_recipe(&recipe);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe characters")
+        );
+    }
+
+    #[test]
+    fn validate_dependency_name_with_special_chars_rejected() {
+        let mut recipe: BuildRecipe = toml::from_str(MINIMAL_RECIPE).unwrap();
+        recipe.depends.build = vec!["lib$(evil)".to_string()];
+        let result = TakumiBuildSystem::validate_recipe(&recipe);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid characters")
+        );
+    }
+
+    #[test]
+    fn validate_valid_dependency_names_accepted() {
+        let mut recipe: BuildRecipe = toml::from_str(FULL_RECIPE).unwrap();
+        recipe.depends.build = vec![
+            "gcc".to_string(),
+            "make-4.4".to_string(),
+            "lib_foo".to_string(),
+        ];
+        recipe.depends.runtime = vec!["glibc".to_string(), "zlib".to_string()];
+        let result = TakumiBuildSystem::validate_recipe(&recipe);
+        assert!(result.is_ok());
+    }
+
+    // -- loaded_recipes_mut test -----------------------------------------------
+
+    #[test]
+    fn loaded_recipes_mut_allows_insertion() {
+        let mut sys = TakumiBuildSystem::new(
+            PathBuf::from("/tmp/recipes"),
+            PathBuf::from("/tmp/build"),
+            PathBuf::from("/tmp/output"),
+        );
+        assert_eq!(sys.recipe_count(), 0);
+        let recipe: BuildRecipe = toml::from_str(MINIMAL_RECIPE).unwrap();
+        sys.loaded_recipes_mut().insert("hello".to_string(), recipe);
+        assert_eq!(sys.recipe_count(), 1);
+        assert!(sys.get_recipe("hello").is_some());
     }
 }

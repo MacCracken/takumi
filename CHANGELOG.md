@@ -1,0 +1,50 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Core build recipe types: `BuildRecipe`, `PackageMetadata`, `SourceSpec`,
+  `DependencySpec`, `BuildSteps`, `SecurityFlags`, `HardeningFlag`
+- `.ark` package output types: `ArkPackage`, `ArkManifest`, `ArkFileEntry`,
+  `ArkFileType`
+- Build context and status types: `BuildContext`, `BuildStatus`, `BuildLogEntry`
+- `TakumiBuildSystem` engine with:
+  - Single and recursive recipe loading from TOML files
+  - Recipe validation with path traversal protection, URL scheme enforcement,
+    SHA-256 format checking, and dependency name validation
+  - Topological sort build order resolution (Kahn's algorithm) with cycle
+    detection
+  - Security flag generation: CFLAGS/LDFLAGS with FullRelro deduplication
+  - `.ark` manifest creation with SHA-256 file hashing
+  - Directory walking with symlink-safe traversal
+- `#[non_exhaustive]` on all public enums for forward compatibility
+- `#[must_use]` on all pure functions
+- Serde `Serialize`/`Deserialize` on every public type
+- 74 unit tests including serde roundtrip tests for all types
+- Criterion benchmark suite (12 benchmarks) with `bench-history.sh` for
+  tracking
+- Baseline benchmark numbers:
+  - `resolve_build_order_300`: 134 us (HashSet optimization: -49% vs naive)
+  - `parse_full_recipe`: 16.7 us
+  - `create_file_list_26_files`: 219 us
+  - `sha256_1mb`: 516 us
+
+### Performance
+
+- `resolve_build_order`: replaced O(n) `Vec::contains` with O(1)
+  `HashSet::contains` for dependency filtering. 300-package chain: 265 us ->
+  134 us (-49%)
+- `hex_sha256`: replaced per-byte `format!("{:02x}")` with lookup table.
+  Contributed to -11% improvement in `create_file_list`
+
+## [0.1.0] - Unreleased
+
+Initial scaffold release. Core types, validation, build ordering, and file
+listing. No actual package building yet (download, extract, compile, package
+phases are not implemented).
