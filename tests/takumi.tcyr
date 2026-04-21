@@ -1,7 +1,30 @@
-# takumi test suite — core types and validation predicates.
+# takumi test suite — core types, validation predicates, topo sort.
 
 include "src/types.cyr"
 include "src/validate.cyr"
+include "src/topo.cyr"
+
+# Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
+fn pkg_vec(a, b, c, d, e, f) {
+    var v = vec_new();
+    if (a != 0) { vec_push(v, a); }
+    if (b != 0) { vec_push(v, b); }
+    if (c != 0) { vec_push(v, c); }
+    if (d != 0) { vec_push(v, d); }
+    if (e != 0) { vec_push(v, e); }
+    if (f != 0) { vec_push(v, f); }
+    return v;
+}
+
+# Register pkg -> [dep1, dep2, dep3] in adj_map. 0 deps are skipped.
+fn set_deps(adj, pkg, d1, d2, d3) {
+    var v = vec_new();
+    if (d1 != 0) { vec_push(v, d1); }
+    if (d2 != 0) { vec_push(v, d2); }
+    if (d3 != 0) { vec_push(v, d3); }
+    map_set(adj, pkg, v);
+    return 0;
+}
 
 fn main() {
     alloc_init();
@@ -178,6 +201,189 @@ fn main() {
     assert_eq(version_has_multiple_parts("1"), 0, "single component warned");
     assert_eq(version_has_multiple_parts(""), 0, "empty warned");
     assert_eq(version_has_multiple_parts("v1"), 0, "'v1' warned");
+
+    test_group("cstr_cmp");
+    assert_eq(cstr_cmp("a", "a"), 0, "equal");
+    assert_eq(cstr_cmp("a", "b"), 0 - 1, "a < b");
+    assert_eq(cstr_cmp("b", "a"), 1, "b > a");
+    assert_eq(cstr_cmp("abc", "abd"), 0 - 1, "prefix differs");
+    assert_eq(cstr_cmp("ab", "abc"), 0 - 1, "shorter is less");
+    assert_eq(cstr_cmp("abc", "ab"), 1, "longer is greater");
+    assert_eq(cstr_cmp("", ""), 0, "both empty equal");
+    assert_eq(cstr_cmp("", "a"), 0 - 1, "empty < any");
+    assert_eq(cstr_cmp("a", ""), 1, "any > empty");
+
+    test_group("vec_insert_sorted_cstr");
+    var sv = vec_new();
+    vec_insert_sorted_cstr(sv, "c");
+    vec_insert_sorted_cstr(sv, "a");
+    vec_insert_sorted_cstr(sv, "b");
+    vec_insert_sorted_cstr(sv, "a");
+    assert_eq(vec_len(sv), 4, "length 4 after 4 inserts");
+    assert(streq(vec_get(sv, 0), "a"), "index 0 = a");
+    assert(streq(vec_get(sv, 1), "a"), "index 1 = a (duplicate keeps order)");
+    assert(streq(vec_get(sv, 2), "b"), "index 2 = b");
+    assert(streq(vec_get(sv, 3), "c"), "index 3 = c");
+
+    test_group("vec_reverse");
+    var rv = vec_new();
+    vec_push(rv, "a");
+    vec_push(rv, "b");
+    vec_push(rv, "c");
+    vec_reverse(rv);
+    assert(streq(vec_get(rv, 0), "c"), "reversed[0] = c");
+    assert(streq(vec_get(rv, 1), "b"), "reversed[1] = b");
+    assert(streq(vec_get(rv, 2), "a"), "reversed[2] = a");
+    var rv2 = vec_new();
+    vec_reverse(rv2);
+    assert_eq(vec_len(rv2), 0, "reversing empty is noop");
+    var rv3 = vec_new();
+    vec_push(rv3, "x");
+    vec_reverse(rv3);
+    assert(streq(vec_get(rv3, 0), "x"), "reversing singleton is noop");
+
+    test_group("cstr_vec_contains");
+    var cv = vec_new();
+    vec_push(cv, "foo");
+    vec_push(cv, "bar");
+    assert_eq(cstr_vec_contains(cv, "foo"), 1, "foo present");
+    assert_eq(cstr_vec_contains(cv, "bar"), 1, "bar present");
+    assert_eq(cstr_vec_contains(cv, "baz"), 0, "baz absent");
+    assert_eq(cstr_vec_contains(vec_new(), "foo"), 0, "empty contains nothing");
+
+    test_group("resolve_build_order: empty input");
+    var r0 = resolve_build_order(vec_new(), map_new());
+    assert_eq(is_ok(r0), 1, "empty ok");
+    assert_eq(vec_len(payload(r0)), 0, "empty result");
+
+    test_group("resolve_build_order: single package no deps");
+    var r1 = resolve_build_order(pkg_vec("solo", 0, 0, 0, 0, 0), map_new());
+    assert_eq(is_ok(r1), 1, "ok");
+    assert_eq(vec_len(payload(r1)), 1, "one emitted");
+    assert(streq(vec_get(payload(r1), 0), "solo"), "solo emitted");
+
+    test_group("resolve_build_order: two independent packages sort ascending");
+    var r2 = resolve_build_order(pkg_vec("b", "a", 0, 0, 0, 0), map_new());
+    assert_eq(is_ok(r2), 1, "ok");
+    var r2v = payload(r2);
+    assert_eq(vec_len(r2v), 2, "two emitted");
+    assert(streq(vec_get(r2v, 0), "a"), "a first");
+    assert(streq(vec_get(r2v, 1), "b"), "b second");
+
+    test_group("resolve_build_order: A depends on B");
+    var adj3 = map_new();
+    set_deps(adj3, "A", "B", 0, 0);
+    var r3 = resolve_build_order(pkg_vec("A", "B", 0, 0, 0, 0), adj3);
+    assert_eq(is_ok(r3), 1, "ok");
+    var r3v = payload(r3);
+    assert_eq(vec_len(r3v), 2, "two emitted");
+    assert(streq(vec_get(r3v, 0), "B"), "B built first");
+    assert(streq(vec_get(r3v, 1), "A"), "A built after B");
+
+    test_group("resolve_build_order: chain A->B->C");
+    var adj4 = map_new();
+    set_deps(adj4, "A", "B", 0, 0);
+    set_deps(adj4, "B", "C", 0, 0);
+    var r4 = resolve_build_order(pkg_vec("A", "B", "C", 0, 0, 0), adj4);
+    assert_eq(is_ok(r4), 1, "ok");
+    var r4v = payload(r4);
+    assert_eq(vec_len(r4v), 3, "three emitted");
+    assert(streq(vec_get(r4v, 0), "C"), "C first");
+    assert(streq(vec_get(r4v, 1), "B"), "B second");
+    assert(streq(vec_get(r4v, 2), "A"), "A last");
+
+    test_group("resolve_build_order: fan-out A->B, A->C");
+    var adj5 = map_new();
+    set_deps(adj5, "A", "B", "C", 0);
+    var r5 = resolve_build_order(pkg_vec("A", "B", "C", 0, 0, 0), adj5);
+    assert_eq(is_ok(r5), 1, "ok");
+    var r5v = payload(r5);
+    assert_eq(vec_len(r5v), 3, "three emitted");
+    # Deterministic: B before C (sorted), A last.
+    assert(streq(vec_get(r5v, 0), "B"), "B first (sorted)");
+    assert(streq(vec_get(r5v, 1), "C"), "C second (sorted)");
+    assert(streq(vec_get(r5v, 2), "A"), "A last");
+
+    test_group("resolve_build_order: external deps filtered");
+    var adj6 = map_new();
+    set_deps(adj6, "A", "glibc", "zlib", 0);
+    # glibc/zlib are not in the input set — their edges must be ignored.
+    var r6 = resolve_build_order(pkg_vec("A", 0, 0, 0, 0, 0), adj6);
+    assert_eq(is_ok(r6), 1, "ok");
+    assert(streq(vec_get(payload(r6), 0), "A"), "A emitted alone");
+
+    test_group("resolve_build_order: diamond A->B,C; B->D; C->D");
+    var adj7 = map_new();
+    set_deps(adj7, "A", "B", "C", 0);
+    set_deps(adj7, "B", "D", 0, 0);
+    set_deps(adj7, "C", "D", 0, 0);
+    var r7 = resolve_build_order(pkg_vec("A", "B", "C", "D", 0, 0), adj7);
+    assert_eq(is_ok(r7), 1, "ok");
+    var r7v = payload(r7);
+    assert_eq(vec_len(r7v), 4, "four emitted");
+    assert(streq(vec_get(r7v, 0), "D"), "D first (deepest source)");
+    assert(streq(vec_get(r7v, 3), "A"), "A last (root consumer)");
+    # B and C both depend only on D, so both become ready together.
+    # Deterministic order is ascending: B then C.
+    assert(streq(vec_get(r7v, 1), "B"), "B second");
+    assert(streq(vec_get(r7v, 2), "C"), "C third");
+
+    test_group("resolve_build_order: self-loop is a cycle");
+    var adj8 = map_new();
+    set_deps(adj8, "A", "A", 0, 0);
+    var r8 = resolve_build_order(pkg_vec("A", 0, 0, 0, 0, 0), adj8);
+    assert_eq(is_ok(r8), 0, "self-loop -> Err");
+    assert_eq(payload(r8), TOPO_ERR_CYCLE, "Err code is TOPO_ERR_CYCLE");
+
+    test_group("resolve_build_order: mutual cycle A<->B");
+    var adj9 = map_new();
+    set_deps(adj9, "A", "B", 0, 0);
+    set_deps(adj9, "B", "A", 0, 0);
+    var r9 = resolve_build_order(pkg_vec("A", "B", 0, 0, 0, 0), adj9);
+    assert_eq(is_ok(r9), 0, "A<->B -> Err");
+
+    test_group("resolve_build_order: 3-cycle A->B->C->A");
+    var adj10 = map_new();
+    set_deps(adj10, "A", "B", 0, 0);
+    set_deps(adj10, "B", "C", 0, 0);
+    set_deps(adj10, "C", "A", 0, 0);
+    var r10 = resolve_build_order(pkg_vec("A", "B", "C", 0, 0, 0), adj10);
+    assert_eq(is_ok(r10), 0, "3-cycle -> Err");
+
+    test_group("resolve_build_order: partial cycle still errors");
+    # D is fine (leaf), A/B/C form a cycle; result must be Err.
+    var adj11 = map_new();
+    set_deps(adj11, "A", "B", 0, 0);
+    set_deps(adj11, "B", "C", 0, 0);
+    set_deps(adj11, "C", "A", 0, 0);
+    var r11 = resolve_build_order(pkg_vec("A", "B", "C", "D", 0, 0), adj11);
+    assert_eq(is_ok(r11), 0, "cycle among subset -> Err");
+
+    test_group("resolve_build_order: determinism");
+    # Two identical runs with identical inputs produce identical output.
+    var adj12 = map_new();
+    set_deps(adj12, "A", "B", "C", 0);
+    set_deps(adj12, "B", "D", 0, 0);
+    set_deps(adj12, "C", "D", 0, 0);
+    var order_a = payload(resolve_build_order(pkg_vec("A", "B", "C", "D", 0, 0), adj12));
+    var order_b = payload(resolve_build_order(pkg_vec("A", "B", "C", "D", 0, 0), adj12));
+    assert_eq(vec_len(order_a), vec_len(order_b), "same length");
+    assert(streq(vec_get(order_a, 0), vec_get(order_b, 0)), "index 0 matches");
+    assert(streq(vec_get(order_a, 1), vec_get(order_b, 1)), "index 1 matches");
+    assert(streq(vec_get(order_a, 2), vec_get(order_b, 2)), "index 2 matches");
+    assert(streq(vec_get(order_a, 3), vec_get(order_b, 3)), "index 3 matches");
+
+    test_group("cycle_members");
+    var partial = vec_new();
+    vec_push(partial, "D");
+    var mem = cycle_members(pkg_vec("A", "B", "C", "D", 0, 0), partial);
+    assert_eq(vec_len(mem), 3, "3 missing");
+    # Order preserves the input order.
+    assert(streq(vec_get(mem, 0), "A"), "missing[0] = A");
+    assert(streq(vec_get(mem, 1), "B"), "missing[1] = B");
+    assert(streq(vec_get(mem, 2), "C"), "missing[2] = C");
+    var none_missing = cycle_members(vec_new(), vec_new());
+    assert_eq(vec_len(none_missing), 0, "no input -> no missing");
 
     return assert_summary();
 }

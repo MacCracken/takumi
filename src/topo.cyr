@@ -1,0 +1,192 @@
+# takumi — dependency-order resolution (Kahn's topological sort).
+#
+# Ported from rust-old/src/lib.rs: TakumiBuildSystem::resolve_build_order.
+#
+# Contract: given a vec of package names and an adjacency map that maps
+# each package name to a vec of its build dependencies (as cstrings),
+# return a build order where every source appears before every package
+# that depends on it. Dependencies outside the input set are ignored —
+# the caller is responsible for pre-filtering if needed.
+#
+# Determinism: ties are broken by ascending lexicographic name so the
+# same input always yields the same output (matches the Rust impl).
+#
+# Return: tagged Result.
+#   Ok(vec_ptr)             — vec of cstring ptrs in build order.
+#   Err(TOPO_ERR_CYCLE)     — dependency cycle detected. Caller can use
+#                             cycle_members() to recover the offenders.
+
+enum TopoErr {
+    TOPO_ERR_CYCLE = 1;
+}
+
+# ---------------------------------------------------------------------------
+# Local cstring + vec helpers. Kept inline until a second consumer appears.
+# ---------------------------------------------------------------------------
+
+# strcmp-style lexicographic compare on NUL-terminated strings.
+# Returns -1, 0, or 1.
+fn cstr_cmp(a, b) {
+    var la = strlen(a);
+    var lb = strlen(b);
+    var m = la;
+    if (lb < m) { m = lb; }
+    var i = 0;
+    while (i < m) {
+        var ca = load8(a + i);
+        var cb = load8(b + i);
+        if (ca < cb) { return 0 - 1; }
+        if (ca > cb) { return 1; }
+        i = i + 1;
+    }
+    if (la < lb) { return 0 - 1; }
+    if (la > lb) { return 1; }
+    return 0;
+}
+
+# Insert `item` into `v` so that v stays sorted ascending by cstr_cmp.
+# O(n); good enough for Kahn's queue where n is the number of currently
+# ready nodes (typically a small fraction of the graph).
+fn vec_insert_sorted_cstr(v, item) {
+    var n = vec_len(v);
+    var pos = 0;
+    while (pos < n) {
+        if (cstr_cmp(item, vec_get(v, pos)) < 0) { break; }
+        pos = pos + 1;
+    }
+    vec_push(v, item);
+    var i = vec_len(v) - 1;
+    while (i > pos) {
+        vec_set(v, i, vec_get(v, i - 1));
+        i = i - 1;
+    }
+    vec_set(v, pos, item);
+    return 0;
+}
+
+# Reverse v in place.
+fn vec_reverse(v) {
+    var n = vec_len(v);
+    var i = 0;
+    var j = n - 1;
+    while (i < j) {
+        var tmp = vec_get(v, i);
+        vec_set(v, i, vec_get(v, j));
+        vec_set(v, j, tmp);
+        i = i + 1;
+        j = j - 1;
+    }
+    return 0;
+}
+
+# Linear search by streq — unlike vec_find (which compares i64 values),
+# this matches cstrings by content so dynamically built name buffers
+# work the same as interned literals.
+fn cstr_vec_contains(v, needle) {
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (streq(vec_get(v, i), needle) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# resolve_build_order
+# ---------------------------------------------------------------------------
+
+fn resolve_build_order(packages, adj_map) {
+    var n = vec_len(packages);
+
+    # in_degree tracks how many input-set packages depend on each package.
+    # Seed every input package with 0 so lookups are unambiguous later.
+    var in_degree = map_new();
+    var i = 0;
+    while (i < n) {
+        map_set(in_degree, vec_get(packages, i), 0);
+        i = i + 1;
+    }
+
+    # Count incoming edges. Deps not in the input set are skipped so that
+    # external system dependencies don't poison the order.
+    i = 0;
+    while (i < n) {
+        var pkg = vec_get(packages, i);
+        var deps = map_get(adj_map, pkg);
+        if (deps != 0) {
+            var dn = vec_len(deps);
+            var j = 0;
+            while (j < dn) {
+                var dep = vec_get(deps, j);
+                if (map_has(in_degree, dep) == 1) {
+                    map_set(in_degree, dep, map_get(in_degree, dep) + 1);
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    # Seed the queue with everything at in-degree 0, kept in sorted order
+    # so vec_pop (which returns the last element) yields the largest name.
+    # After the main loop we reverse, so the net effect is smallest-first.
+    var queue = vec_new();
+    i = 0;
+    while (i < n) {
+        var pkg = vec_get(packages, i);
+        if (map_get(in_degree, pkg) == 0) {
+            vec_insert_sorted_cstr(queue, pkg);
+        }
+        i = i + 1;
+    }
+
+    var result = vec_new();
+    while (vec_len(queue) > 0) {
+        var node = vec_pop(queue);
+        vec_push(result, node);
+
+        var deps = map_get(adj_map, node);
+        if (deps != 0) {
+            var dn = vec_len(deps);
+            var j = 0;
+            while (j < dn) {
+                var dep = vec_get(deps, j);
+                if (map_has(in_degree, dep) == 1) {
+                    var d = map_get(in_degree, dep) - 1;
+                    map_set(in_degree, dep, d);
+                    if (d == 0) {
+                        vec_insert_sorted_cstr(queue, dep);
+                    }
+                }
+                j = j + 1;
+            }
+        }
+    }
+
+    if (vec_len(result) != n) {
+        return Err(TOPO_ERR_CYCLE);
+    }
+
+    # adj maps pkg -> its build-deps, so in-degree 0 means "leaf/consumer".
+    # Kahn emits consumers first; reversing gives sources-first.
+    vec_reverse(result);
+    return Ok(result);
+}
+
+# Given the original `packages` and the partial `order` produced by a
+# failed resolve_build_order, return the subset that wasn't emitted —
+# those are the packages participating in (or blocked by) the cycle.
+fn cycle_members(packages, order) {
+    var missing = vec_new();
+    var n = vec_len(packages);
+    var i = 0;
+    while (i < n) {
+        var pkg = vec_get(packages, i);
+        if (cstr_vec_contains(order, pkg) == 0) {
+            vec_push(missing, pkg);
+        }
+        i = i + 1;
+    }
+    return missing;
+}

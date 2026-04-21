@@ -11,4 +11,4 @@ entry = "src/main.cyr"
 output = "takumi"
 
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "assert"]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "assert", "hashmap", "tagged"]

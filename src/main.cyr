@@ -3,6 +3,7 @@
 
 include "src/types.cyr"
 include "src/validate.cyr"
+include "src/topo.cyr"
 
 fn main() {
     alloc_init();

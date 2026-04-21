@@ -32,6 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `char::is_alphanumeric`, which admitted Unicode homoglyphs and would
   have allowed collision-prone package names).
 - 71 validation predicate tests. Total suite: **135 assertions, 0 failures**.
+- `src/topo.cyr` — dependency-order resolution via Kahn's topological
+  sort: `resolve_build_order(packages, adj_map) -> Ok(vec) | Err(TOPO_ERR_CYCLE)`.
+  Ties are broken by ascending lexicographic name so the build order is
+  deterministic across runs. Dependencies outside the input set are
+  ignored (caller pre-filters). `cycle_members(packages, order)` recovers
+  the cycle participants after a failed resolve. Local helpers
+  (`cstr_cmp`, `vec_insert_sorted_cstr`, `vec_reverse`, `cstr_vec_contains`)
+  kept inline pending a second consumer.
+- `cyrius.cyml` stdlib now includes `hashmap` and `tagged` — required
+  for the topo sort and the `Ok`/`Err` tagged-Result API. Without these
+  in the auto-include list, calls to `map_new`/`Ok`/`Err` silently
+  linked to garbage at runtime and produced an infinite print loop.
+- 69 new topological-sort tests (helpers, empty/single/chain/fan-out/
+  diamond/external-dep/self-loop/mutual/3-cycle/partial-cycle/
+  determinism/cycle_members). Total suite: **204 assertions, 0 failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 
