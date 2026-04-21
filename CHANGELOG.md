@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag-only; the payload will live on the owning struct.
 - 64 tests in `tests/takumi.tcyr` covering discriminants, canonical names,
   aliases, unknown-input rejection, and name roundtrip.
+- `src/validate.cyr` — pure validation predicates split out of the Rust
+  `TakumiBuildSystem::validate_recipe` monolith: `byte_is_digit`,
+  `byte_is_alpha`, `byte_is_lower_hex`, `byte_is_allowed_name_char`,
+  `name_contains_unsafe`, `name_has_only_allowed_chars`,
+  `url_has_valid_scheme`, `sha256_is_lowercase_hex64`,
+  `version_has_multiple_parts`. ASCII-only by design (the Rust impl used
+  `char::is_alphanumeric`, which admitted Unicode homoglyphs and would
+  have allowed collision-prone package names).
+- 71 validation predicate tests. Total suite: **135 assertions, 0 failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 

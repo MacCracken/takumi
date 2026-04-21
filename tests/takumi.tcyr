@@ -1,6 +1,7 @@
-# takumi test suite — core types.
+# takumi test suite — core types and validation predicates.
 
 include "src/types.cyr"
+include "src/validate.cyr"
 
 fn main() {
     alloc_init();
@@ -88,6 +89,95 @@ fn main() {
     assert(streq(bs_to_cstr(BS_SIGNING), "signing"), "signing");
     assert(streq(bs_to_cstr(BS_COMPLETE), "complete"), "complete");
     assert(streq(bs_to_cstr(BS_FAILED), "failed"), "failed");
+
+    test_group("byte_is_digit");
+    assert_eq(byte_is_digit(48), 1, "'0' is digit");
+    assert_eq(byte_is_digit(57), 1, "'9' is digit");
+    assert_eq(byte_is_digit(47), 0, "'/' is not digit");
+    assert_eq(byte_is_digit(58), 0, "':' is not digit");
+    assert_eq(byte_is_digit(97), 0, "'a' is not digit");
+
+    test_group("byte_is_alpha");
+    assert_eq(byte_is_alpha(65), 1, "'A' is alpha");
+    assert_eq(byte_is_alpha(90), 1, "'Z' is alpha");
+    assert_eq(byte_is_alpha(97), 1, "'a' is alpha");
+    assert_eq(byte_is_alpha(122), 1, "'z' is alpha");
+    assert_eq(byte_is_alpha(64), 0, "'@' is not alpha");
+    assert_eq(byte_is_alpha(91), 0, "'[' is not alpha");
+    assert_eq(byte_is_alpha(96), 0, "'`' is not alpha");
+    assert_eq(byte_is_alpha(123), 0, "'{' is not alpha");
+    assert_eq(byte_is_alpha(48), 0, "'0' is not alpha");
+
+    test_group("byte_is_lower_hex");
+    assert_eq(byte_is_lower_hex(48), 1, "'0' is hex");
+    assert_eq(byte_is_lower_hex(57), 1, "'9' is hex");
+    assert_eq(byte_is_lower_hex(97), 1, "'a' is hex");
+    assert_eq(byte_is_lower_hex(102), 1, "'f' is hex");
+    assert_eq(byte_is_lower_hex(103), 0, "'g' is not hex");
+    assert_eq(byte_is_lower_hex(65), 0, "'A' rejected (uppercase)");
+    assert_eq(byte_is_lower_hex(70), 0, "'F' rejected (uppercase)");
+
+    test_group("byte_is_allowed_name_char");
+    assert_eq(byte_is_allowed_name_char(97), 1, "'a' allowed");
+    assert_eq(byte_is_allowed_name_char(48), 1, "'0' allowed");
+    assert_eq(byte_is_allowed_name_char(46), 1, "'.' allowed");
+    assert_eq(byte_is_allowed_name_char(45), 1, "'-' allowed");
+    assert_eq(byte_is_allowed_name_char(95), 1, "'_' allowed");
+    assert_eq(byte_is_allowed_name_char(47), 0, "'/' rejected");
+    assert_eq(byte_is_allowed_name_char(32), 0, "' ' rejected");
+    assert_eq(byte_is_allowed_name_char(64), 0, "'@' rejected");
+
+    test_group("name_contains_unsafe");
+    assert_eq(name_contains_unsafe("hello"), 0, "clean name");
+    assert_eq(name_contains_unsafe("hel-lo_1.0"), 0, "common chars ok");
+    assert_eq(name_contains_unsafe("hel.lo"), 0, "single dot ok");
+    assert_eq(name_contains_unsafe(""), 0, "empty contains nothing unsafe");
+    assert_eq(name_contains_unsafe("."), 0, "single '.' ok");
+    assert_eq(name_contains_unsafe("hel/lo"), 1, "slash rejected");
+    assert_eq(name_contains_unsafe("hel lo"), 1, "space rejected");
+    assert_eq(name_contains_unsafe("hel\\lo"), 1, "backslash rejected");
+    assert_eq(name_contains_unsafe("hel..lo"), 1, "'..' substring rejected");
+    assert_eq(name_contains_unsafe(".."), 1, "just '..' rejected");
+
+    test_group("name_has_only_allowed_chars");
+    assert_eq(name_has_only_allowed_chars("hello"), 1, "lowercase ok");
+    assert_eq(name_has_only_allowed_chars("Hello-World_1.0"), 1, "mixed case and punctuation ok");
+    assert_eq(name_has_only_allowed_chars("0abc"), 1, "leading digit ok");
+    assert_eq(name_has_only_allowed_chars(""), 0, "empty rejected");
+    assert_eq(name_has_only_allowed_chars("hel@lo"), 0, "'@' rejected");
+    assert_eq(name_has_only_allowed_chars("hel lo"), 0, "space rejected");
+    assert_eq(name_has_only_allowed_chars("hel/lo"), 0, "slash rejected");
+
+    test_group("url_has_valid_scheme");
+    assert_eq(url_has_valid_scheme("http://example.com/x.tar.gz"), 1, "http ok");
+    assert_eq(url_has_valid_scheme("https://example.com/x.tar.gz"), 1, "https ok");
+    assert_eq(url_has_valid_scheme("ftp://example.com/x"), 0, "ftp rejected");
+    assert_eq(url_has_valid_scheme("file:///etc/passwd"), 0, "file rejected");
+    assert_eq(url_has_valid_scheme(""), 0, "empty rejected");
+    assert_eq(url_has_valid_scheme("htt"), 0, "too short rejected");
+    assert_eq(url_has_valid_scheme("http"), 0, "no '://' rejected");
+    assert_eq(url_has_valid_scheme("http:/foo"), 0, "single slash rejected");
+    assert_eq(url_has_valid_scheme("HTTPS://example.com"), 0, "uppercase rejected");
+
+    test_group("sha256_is_lowercase_hex64");
+    assert_eq(sha256_is_lowercase_hex64("e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"), 1, "valid digest");
+    assert_eq(sha256_is_lowercase_hex64("0000000000000000000000000000000000000000000000000000000000000000"), 1, "all zeros valid");
+    assert_eq(sha256_is_lowercase_hex64("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), 1, "all f valid");
+    assert_eq(sha256_is_lowercase_hex64(""), 0, "empty rejected");
+    assert_eq(sha256_is_lowercase_hex64("abc123"), 0, "short rejected");
+    assert_eq(sha256_is_lowercase_hex64("e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f"), 0, "63 chars rejected");
+    assert_eq(sha256_is_lowercase_hex64("e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f00"), 0, "65 chars rejected");
+    assert_eq(sha256_is_lowercase_hex64("E1F5C1C2B3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0"), 0, "uppercase rejected");
+    assert_eq(sha256_is_lowercase_hex64("g1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"), 0, "non-hex rejected");
+
+    test_group("version_has_multiple_parts");
+    assert_eq(version_has_multiple_parts("1.0.0"), 1, "semver");
+    assert_eq(version_has_multiple_parts("1.0"), 1, "major.minor");
+    assert_eq(version_has_multiple_parts("3.5.2-rc1"), 1, "with pre-release");
+    assert_eq(version_has_multiple_parts(".1"), 1, "leading dot counts");
+    assert_eq(version_has_multiple_parts("1"), 0, "single component warned");
+    assert_eq(version_has_multiple_parts(""), 0, "empty warned");
+    assert_eq(version_has_multiple_parts("v1"), 0, "'v1' warned");
 
     return assert_summary();
 }

@@ -2,6 +2,7 @@
 # Cyrius port (in progress); Rust reference lives in rust-old/.
 
 include "src/types.cyr"
+include "src/validate.cyr"
 
 fn main() {
     alloc_init();

@@ -5,9 +5,11 @@
 **Takumi** (Japanese: 匠 — master craftsman) — Package build system for AGNOS (.ark packages from TOML recipes)
 
 - **Type**: Binary
+- **Language**: Cyrius (toolchain pinned to 5.5.23). Rust reference remains
+  under `rust-old/` during the port and is authoritative until feature
+  parity is reached.
 - **License**: GPL-3.0-only
-- **MSRV**: 1.89
-- **Version**: SemVer 0.1.0
+- **Version**: SemVer 0.1.0 (source of truth: `VERSION` → mirrored in `cyrius.cyml`)
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Philosophy**: [AGNOS Philosophy & Intention](https://github.com/MacCracken/agnosticos/blob/main/docs/philosophy.md)
 - **First-party standards**: [First-Party Application Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
@@ -23,8 +25,8 @@ ark (builds packages from zugot recipes). Takumi reads TOML recipes from the zug
 
 0. Read roadmap, CHANGELOG, and open issues — know what was intended before auditing what was built
 1. Test + benchmark sweep of existing code
-2. Cleanliness check: `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings`, `cargo audit`, `cargo deny check`, `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps`
-3. Get baseline benchmarks (`./scripts/bench-history.sh`)
+2. Cleanliness check: `cyrius fmt src/*.cyr --check`, `cyrius lint src/*.cyr` (0 warnings), `cyrius vet src/main.cyr`, `cyrius deny src/main.cyr`, `cyrius doc --check src/main.cyr`. `cyrius audit` bundles self-host + test + fmt + lint and is the canonical umbrella check.
+3. Get baseline benchmarks (`cyrius bench tests/takumi.bcyr` + `./scripts/bench-history.sh`)
 4. Internal deep review — gaps, optimizations, security, logging/errors, docs
 5. External research — domain completeness, missing capabilities, best practices, world-class accuracy
 6. Cleanliness check — must be clean after review
@@ -36,16 +38,16 @@ ark (builds packages from zugot recipes). Takumi reads TOML recipes from the zug
 ### Work Loop / Working Loop (continuous)
 
 1. Work phase — new features, roadmap items, bug fixes
-2. Cleanliness check: `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings`, `cargo audit`, `cargo deny check`, `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps`
-3. Test + benchmark additions for new code
-4. Run benchmarks (`./scripts/bench-history.sh`)
+2. Cleanliness check: `cyrius fmt src/*.cyr --check`, `cyrius lint src/*.cyr` (0 warnings), `cyrius vet src/main.cyr`, `cyrius deny src/main.cyr`, `cyrius doc --check src/main.cyr` (or `cyrius audit` for the bundled equivalent)
+3. Test + benchmark additions for new code (`tests/*.tcyr`, `tests/*.bcyr`)
+4. Run benchmarks (`cyrius bench tests/takumi.bcyr` + `./scripts/bench-history.sh` when present)
 5. Internal review — performance, memory, security, throughput, correctness
 6. Cleanliness check — must be clean after review
 7. Deeper tests/benchmarks from review observations
 8. Run benchmarks again — prove the wins
 9. If review heavy → return to step 5
 10. Documentation — update CHANGELOG, roadmap, docs, ADRs, source citations (see [Documentation Standards](#documentation-standards))
-11. Version check — VERSION, Cargo.toml, recipe (in zugot) all in sync
+11. Version check — `VERSION`, `cyrius.cyml` (`version =`), and the recipe in zugot all in sync
 12. Return to step 1
 
 ### Task Sizing
@@ -64,15 +66,21 @@ ark (builds packages from zugot recipes). Takumi reads TOML recipes from the zug
 ### Key Principles
 
 - Never skip benchmarks
-- `#[non_exhaustive]` on ALL public enums (forward compatibility)
-- `#[must_use]` on all pure functions
-- Every type must be Serialize + Deserialize (serde)
-- Feature-gate optional modules — consumers pull only what they need
-- Zero unwrap/panic in library code
-- All types must have serde roundtrip tests
+- Enum discriminants are stable: explicit `= N` on every variant, never
+  renumber (they appear in `.ark` manifests and on-disk state)
+- Prefer pure functions; isolate I/O behind explicit entry points
+- Gate optional modules with `#ifdef` — consumers pull only what they need
+- No aborts from library code: no `assert(...)` in lib paths, no
+  out-of-bounds `vec_get`/`map_get` on caller-controlled indices
+  (validate first, or route through checked wrappers)
+- Every type must have a canonical string form and a roundtrip test
+  (`x_to_cstr` ↔ `x_from_cstr`, TOML in ↔ out)
 - Builds must be reproducible — same recipe + same sources = identical .ark output
-- SHA-256 integrity on all source downloads and produced artifacts
+- SHA-256 integrity on all source downloads and produced artifacts (use
+  `lib/sigil.cyr` — `sha256_digest` / `sha256_digest_bytes`)
 - Recipe validation must be strict — reject malformed TOML early with clear errors
+- Always call `alloc_init()` before any `alloc()` path (including tests)
+- Pin toolchain to a released Cyrius tag in `cyrius.cyml`; never a dev version
 
 ## DO NOT
 

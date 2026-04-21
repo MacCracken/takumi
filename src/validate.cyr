@@ -1,0 +1,132 @@
+# takumi — recipe validation predicates (pure, input-only).
+#
+# Ported from rust-old/src/lib.rs: TakumiBuildSystem::validate_recipe
+# was one monolithic function. Splitting into pure predicates gives each
+# rule its own name and test surface; a future orchestrator in validate.cyr
+# will compose them into the full recipe-validation routine.
+#
+# Inputs are cstrings. NUL is implicit (strlen stops at NUL), so the Rust
+# `contains('\0')` check is unnecessary here — a cstring cannot embed NUL.
+# Character classes are ASCII-only by design: package names and hashes
+# must be reproducible and unambiguous. The Rust impl used
+# `char::is_alphanumeric`, which accepts Unicode and would allow
+# homoglyph collisions (Cyrillic "а" vs Latin "a"); narrowing to ASCII
+# is an intentional improvement.
+
+# ---------------------------------------------------------------------------
+# Byte-class predicates. ASCII codepoints as decimal.
+# ---------------------------------------------------------------------------
+
+fn byte_is_digit(c) {
+    if (c < 48) { return 0; }
+    if (c > 57) { return 0; }
+    return 1;
+}
+
+fn byte_is_alpha(c) {
+    if (c >= 65) {
+        if (c <= 90) { return 1; }
+    }
+    if (c >= 97) {
+        if (c <= 122) { return 1; }
+    }
+    return 0;
+}
+
+fn byte_is_lower_hex(c) {
+    if (byte_is_digit(c) == 1) { return 1; }
+    if (c >= 97) {
+        if (c <= 102) { return 1; }
+    }
+    return 0;
+}
+
+fn byte_is_allowed_name_char(c) {
+    if (byte_is_alpha(c) == 1) { return 1; }
+    if (byte_is_digit(c) == 1) { return 1; }
+    if (c == 46) { return 1; }
+    if (c == 45) { return 1; }
+    if (c == 95) { return 1; }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Name safety. Fatal if any of these fire.
+# ---------------------------------------------------------------------------
+
+# Any unsafe byte present: '/', ' ', '\', or a ".." substring.
+# NUL is impossible in a cstring and is checked implicitly.
+fn name_contains_unsafe(s) {
+    var len = strlen(s);
+    var i = 0;
+    while (i < len) {
+        var c = load8(s + i);
+        if (c == 47) { return 1; }
+        if (c == 32) { return 1; }
+        if (c == 92) { return 1; }
+        if (c == 46) {
+            if (i + 1 < len) {
+                if (load8(s + i + 1) == 46) { return 1; }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Returns 1 only if s is non-empty and every byte is in the allowed set.
+fn name_has_only_allowed_chars(s) {
+    var len = strlen(s);
+    if (len == 0) { return 0; }
+    var i = 0;
+    while (i < len) {
+        if (byte_is_allowed_name_char(load8(s + i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# ---------------------------------------------------------------------------
+# Source URL scheme — only plaintext http(s) download URLs are accepted.
+# Scheme check is case-sensitive; recipes must use lowercase.
+# ---------------------------------------------------------------------------
+
+fn url_has_valid_scheme(s) {
+    var len = strlen(s);
+    if (len >= 7) {
+        if (memeq(s, "http://", 7) == 1) { return 1; }
+    }
+    if (len >= 8) {
+        if (memeq(s, "https://", 8) == 1) { return 1; }
+    }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# SHA-256 digest format. Strict: exactly 64 bytes, all lowercase hex.
+# ---------------------------------------------------------------------------
+
+fn sha256_is_lowercase_hex64(s) {
+    if (strlen(s) != 64) { return 0; }
+    var i = 0;
+    while (i < 64) {
+        if (byte_is_lower_hex(load8(s + i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# ---------------------------------------------------------------------------
+# Version heuristic — warns if the version string has no '.' separator
+# (e.g. "7" instead of "7.0"). Not strict semver, matches the Rust impl.
+# ---------------------------------------------------------------------------
+
+fn version_has_multiple_parts(s) {
+    var len = strlen(s);
+    var i = 0;
+    while (i < len) {
+        if (load8(s + i) == 46) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
