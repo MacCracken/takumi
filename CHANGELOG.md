@@ -78,6 +78,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handling, full recipe composition, pointer-identity through the
   aggregate, two-recipe independence). Total suite: **288 assertions,
   0 failures**.
+- `src/parse.cyr` — CYML recipe parser. `recipe_parse_str(data, len)`
+  and `recipe_parse_file(path)` return a `BuildRecipe` pointer or `0`
+  on failure (missing required section/field, unknown hardening flag
+  — matches Rust's strict serde behavior). All values are copied out
+  of the parse buffer as fresh cstring allocations so callers can
+  discard the input buffer once parsing completes.
+- `_cyml_header_normalize` — preprocessor that promotes `[section]`
+  → `[[section]]` at line starts. `lib/toml.cyr` is vidya-centric and
+  only recognizes `[[section]]` (arrays-of-tables); without this shim
+  every pair in a recipe landed in one unnamed section. The promoter
+  only touches line-leading `[`, so bracketed content inside string
+  values is safe.
+- `[deps] stdlib` in `cyrius.cyml` extended with `cyml`, `toml`, `fs`.
+- 58 new parse tests (minimal/full roundtrip, CYML-with-body parses
+  header only, missing required sections/fields → 0, unknown
+  hardening flag → 0, alias parsing works, array edge cases).
+  Total suite: **346 assertions, 0 failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 

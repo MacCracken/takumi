@@ -1,0 +1,270 @@
+# takumi — CYML recipe parser.
+#
+# Pipeline: cyml_parse splits header / markdown body, toml_parse
+# parses the header into sections+pairs, this module walks those
+# sections and builds a BuildRecipe (see src/recipe.cyr).
+#
+# The cyml body is deliberately ignored here — it's maintainer prose
+# and doesn't feed into the build. A future consumer (e.g. a docs
+# generator) can read it via cyml_doc_entry / cyml_entry_body.
+#
+# Failure model: return 0 on any parse failure (missing required
+# section, missing required field, unknown hardening flag). The
+# validator in src/validate.cyr layers more thorough recipe checks on
+# top once a recipe is parsed. This split keeps the parser strict but
+# narrow.
+
+# ---------------------------------------------------------------------------
+# Header normalization.
+#
+# lib/toml.cyr was written for vidya content and only recognizes
+# `[[section]]` (arrays-of-tables). CYML recipes use plain `[section]`
+# (single-bracket tables) for [package], [source], etc. This
+# preprocessor promotes every line-leading `[x]` to `[[x]]` before we
+# hand the buffer to toml_parse, leaving already-`[[y]]` lines alone.
+# Only touches bytes at line starts, so brackets inside string values
+# (e.g. `configure = "./config --[x]"`) are untouched.
+# ---------------------------------------------------------------------------
+
+fn _cyml_header_normalize(src) {
+    var data = str_data(src);
+    var len = str_len(src);
+    # Worst case doubles every byte (every `[` and `]` grows).
+    var buf = alloc(len * 2 + 16);
+    var out = 0;
+    var i = 0;
+    while (i < len) {
+        var at_start = 0;
+        if (i == 0) { at_start = 1; }
+        if (i > 0) {
+            if (load8(data + i - 1) == 10) { at_start = 1; }
+        }
+        var promoted = 0;
+        if (at_start == 1) {
+            if (load8(data + i) == 91) {
+                var already_double = 0;
+                if (i + 1 < len) {
+                    if (load8(data + i + 1) == 91) { already_double = 1; }
+                }
+                if (already_double == 0) {
+                    var close_pos = i + 1;
+                    var found_close = 0;
+                    while (close_pos < len) {
+                        var cc = load8(data + close_pos);
+                        if (cc == 93) { found_close = 1; break; }
+                        if (cc == 10) { break; }
+                        close_pos = close_pos + 1;
+                    }
+                    if (found_close == 1) {
+                        store8(buf + out, 91); out = out + 1;
+                        store8(buf + out, 91); out = out + 1;
+                        var j = i + 1;
+                        while (j < close_pos) {
+                            store8(buf + out, load8(data + j));
+                            out = out + 1;
+                            j = j + 1;
+                        }
+                        store8(buf + out, 93); out = out + 1;
+                        store8(buf + out, 93); out = out + 1;
+                        i = close_pos + 1;
+                        promoted = 1;
+                    }
+                }
+            }
+        }
+        if (promoted == 0) {
+            store8(buf + out, load8(data + i));
+            out = out + 1;
+            i = i + 1;
+        }
+    }
+    return str_new(buf, out);
+}
+
+# ---------------------------------------------------------------------------
+# Internal helpers — operate on the section / pairs vecs from toml_parse.
+# ---------------------------------------------------------------------------
+
+fn _find_section(sections, name) {
+    var i = 0;
+    var n = vec_len(sections);
+    while (i < n) {
+        var s = vec_get(sections, i);
+        if (str_eq_cstr(toml_section_name(s), name) == 1) {
+            return toml_section_pairs(s);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# toml_get returns a Str; _get_cstr copies into a NUL-terminated
+# allocation so consumers don't depend on the parser's buffer staying
+# alive.
+fn _get_cstr(pairs, key) {
+    var s = toml_get(pairs, key);
+    if (s == 0) { return 0; }
+    return str_cstr(s);
+}
+
+fn _get_int(pairs, key, fallback) {
+    var s = toml_get(pairs, key);
+    if (s == 0) { return fallback; }
+    return str_to_int(s);
+}
+
+# toml_parse stores an array value as the raw `[…]` literal — this
+# walks that buffer and pulls out each double-quoted entry as a
+# freshly allocated cstring. We don't model non-string arrays (the
+# recipe only uses string arrays) and we don't try to un-escape inner
+# quotes, which the recipe grammar doesn't use either.
+fn _parse_array_cstrs(arr_str) {
+    var result = vec_new();
+    var data = str_data(arr_str);
+    var len = str_len(arr_str);
+    var pos = 0;
+    while (pos < len) {
+        if (load8(data + pos) == 34) {
+            pos = pos + 1;
+            var start = pos;
+            while (pos < len) {
+                if (load8(data + pos) == 34) { break; }
+                pos = pos + 1;
+            }
+            var slen = pos - start;
+            var buf = alloc(slen + 1);
+            memcpy(buf, data + start, slen);
+            store8(buf + slen, 0);
+            vec_push(result, buf);
+            pos = pos + 1;
+        } else {
+            pos = pos + 1;
+        }
+    }
+    return result;
+}
+
+fn _get_array_cstrs(pairs, key) {
+    var s = toml_get(pairs, key);
+    if (s == 0) { return vec_new(); }
+    return _parse_array_cstrs(s);
+}
+
+# Returns 0 if any hardening name is unrecognized — matching Rust's
+# strict serde deserialization of `Vec<HardeningFlag>`.
+fn _get_hardening(pairs, key) {
+    var names = _get_array_cstrs(pairs, key);
+    var result = vec_new();
+    var i = 0;
+    var n = vec_len(names);
+    while (i < n) {
+        var flag = hf_from_cstr(vec_get(names, i));
+        if (flag < 0) { return 0; }
+        vec_push(result, flag);
+        i = i + 1;
+    }
+    return result;
+}
+
+# ---------------------------------------------------------------------------
+# Per-section parsers.
+# Required sections: [package], [source]. Missing -> 0.
+# Optional sections: [depends], [build], [security]. Missing -> defaults.
+# ---------------------------------------------------------------------------
+
+fn _parse_package(sections) {
+    var pairs = _find_section(sections, "package");
+    if (pairs == 0) { return 0; }
+    var name = _get_cstr(pairs, "name");
+    if (name == 0) { return 0; }
+    var version = _get_cstr(pairs, "version");
+    if (version == 0) { return 0; }
+    var description = _get_cstr(pairs, "description");
+    if (description == 0) { return 0; }
+    var license = _get_cstr(pairs, "license");
+    if (license == 0) { return 0; }
+    var groups = _get_array_cstrs(pairs, "groups");
+    var release = _get_int(pairs, "release", 1);
+    var arch = _get_cstr(pairs, "arch");
+    return pkg_new(name, version, description, license, groups, release, arch);
+}
+
+fn _parse_source(sections) {
+    var pairs = _find_section(sections, "source");
+    if (pairs == 0) { return 0; }
+    var url = _get_cstr(pairs, "url");
+    if (url == 0) { return 0; }
+    var sha256 = _get_cstr(pairs, "sha256");
+    if (sha256 == 0) { return 0; }
+    var patches = _get_array_cstrs(pairs, "patches");
+    return src_new(url, sha256, patches);
+}
+
+fn _parse_depends(sections) {
+    var pairs = _find_section(sections, "depends");
+    if (pairs == 0) { return dep_new(vec_new(), vec_new()); }
+    return dep_new(_get_array_cstrs(pairs, "runtime"), _get_array_cstrs(pairs, "build"));
+}
+
+fn _parse_build(sections) {
+    var pairs = _find_section(sections, "build");
+    if (pairs == 0) { return bld_new(0, 0, 0, 0, 0, 0); }
+    return bld_new(
+        _get_cstr(pairs, "configure"),
+        _get_cstr(pairs, "make"),
+        _get_cstr(pairs, "check"),
+        _get_cstr(pairs, "install"),
+        _get_cstr(pairs, "pre_build"),
+        _get_cstr(pairs, "post_install")
+    );
+}
+
+fn _parse_security(sections) {
+    var pairs = _find_section(sections, "security");
+    if (pairs == 0) { return sec_new(vec_new(), 0, 0); }
+    var hardening = _get_hardening(pairs, "hardening");
+    if (hardening == 0) {
+        # Distinguish "no hardening key" (empty vec, fine) from
+        # "unknown flag name" (0, fail). _get_hardening returns an
+        # empty vec when the key is absent, so 0 here means the key
+        # was present but at least one name was unrecognized.
+        return 0;
+    }
+    return sec_new(hardening, _get_cstr(pairs, "cflags"), _get_cstr(pairs, "ldflags"));
+}
+
+# ---------------------------------------------------------------------------
+# Public entry points.
+# ---------------------------------------------------------------------------
+
+# Parse a CYML buffer (data, len). All strings are copied into fresh
+# heap allocations, so the caller's buffer can be discarded as soon
+# as this returns.
+fn recipe_parse_str(data, len) {
+    var doc = cyml_parse(data, len);
+    var hdr_ptr = cyml_doc_header(doc);
+    var hdr_len = cyml_doc_header_len(doc);
+    if (hdr_len == 0) { return 0; }
+    var hdr = str_new(hdr_ptr, hdr_len);
+    var sections = toml_parse(_cyml_header_normalize(hdr));
+
+    var pkg = _parse_package(sections);
+    if (pkg == 0) { return 0; }
+    var src = _parse_source(sections);
+    if (src == 0) { return 0; }
+    var dep = _parse_depends(sections);
+    var bld = _parse_build(sections);
+    var sec = _parse_security(sections);
+    if (sec == 0) { return 0; }
+
+    return recipe_new(pkg, src, dep, bld, sec);
+}
+
+# Read `path` and parse it as CYML. 256KB ceiling — matches the
+# toml_parse_file / cyml parser's own limit.
+fn recipe_parse_file(path) {
+    var buf = alloc(262144);
+    var n = file_read_all(path, buf, 262144);
+    if (n <= 0) { return 0; }
+    return recipe_parse_str(buf, n);
+}

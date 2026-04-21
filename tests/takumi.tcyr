@@ -5,6 +5,7 @@ include "src/validate.cyr"
 include "src/topo.cyr"
 include "src/flags.cyr"
 include "src/recipe.cyr"
+include "src/parse.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -613,6 +614,200 @@ fn main() {
     var pkg_b = pkg_new("b", "2", "d", "L", vec_new(), 1, 0);
     assert(streq(pkg_name(pkg_a), "a"), "A unchanged after B");
     assert(streq(pkg_name(pkg_b), "b"), "B is B");
+
+    test_group("recipe_parse_str: minimal header-only CYML");
+    var sb_min = str_builder_new();
+    str_builder_add_cstr(sb_min, "[package]\n");
+    str_builder_add_cstr(sb_min, "name = \"hello\"\n");
+    str_builder_add_cstr(sb_min, "version = \"1.0.0\"\n");
+    str_builder_add_cstr(sb_min, "description = \"greeting\"\n");
+    str_builder_add_cstr(sb_min, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_min, "[source]\n");
+    str_builder_add_cstr(sb_min, "url = \"https://example.com/hello.tar.gz\"\n");
+    str_builder_add_cstr(sb_min, "sha256 = \"deadbeef\"\n");
+    var cyml_min = str_cstr(str_builder_build(sb_min));
+    var r_min = recipe_parse_str(cyml_min, strlen(cyml_min));
+    assert(r_min != 0, "minimal parse succeeds");
+    assert(streq(pkg_name(recipe_package(r_min)), "hello"), "pkg.name");
+    assert(streq(pkg_version(recipe_package(r_min)), "1.0.0"), "pkg.version");
+    assert(streq(pkg_description(recipe_package(r_min)), "greeting"), "pkg.description");
+    assert(streq(pkg_license(recipe_package(r_min)), "MIT"), "pkg.license");
+    assert_eq(pkg_release(recipe_package(r_min)), 1, "release defaults to 1");
+    assert_eq(pkg_arch(recipe_package(r_min)), 0, "arch defaults to 0 (None)");
+    assert_eq(vec_len(pkg_groups(recipe_package(r_min))), 0, "groups defaults to empty");
+    assert(streq(src_url(recipe_source(r_min)), "https://example.com/hello.tar.gz"), "src.url");
+    assert(streq(src_sha256(recipe_source(r_min)), "deadbeef"), "src.sha256");
+    assert_eq(vec_len(src_patches(recipe_source(r_min))), 0, "patches defaults to empty");
+    # Missing optional sections default.
+    assert_eq(vec_len(dep_runtime(recipe_depends(r_min))), 0, "depends.runtime empty");
+    assert_eq(vec_len(dep_build(recipe_depends(r_min))), 0, "depends.build empty");
+    assert_eq(bld_configure(recipe_build(r_min)), 0, "build.configure None");
+    assert_eq(bld_make(recipe_build(r_min)), 0, "build.make None");
+    assert_eq(vec_len(sec_hardening(recipe_security(r_min))), 0, "security.hardening empty");
+    assert_eq(sec_cflags(recipe_security(r_min)), 0, "security.cflags None");
+
+    test_group("recipe_parse_str: full CYML with every section");
+    var sb_full = str_builder_new();
+    str_builder_add_cstr(sb_full, "[package]\n");
+    str_builder_add_cstr(sb_full, "name = \"openssl\"\n");
+    str_builder_add_cstr(sb_full, "version = \"3.5.2\"\n");
+    str_builder_add_cstr(sb_full, "description = \"TLS/SSL cryptographic library\"\n");
+    str_builder_add_cstr(sb_full, "license = \"Apache-2.0\"\n");
+    str_builder_add_cstr(sb_full, "groups = [\"base\", \"crypto\"]\n");
+    str_builder_add_cstr(sb_full, "release = 3\n");
+    str_builder_add_cstr(sb_full, "arch = \"x86_64\"\n\n");
+    str_builder_add_cstr(sb_full, "[source]\n");
+    str_builder_add_cstr(sb_full, "url = \"https://www.openssl.org/source/openssl-3.5.2.tar.gz\"\n");
+    str_builder_add_cstr(sb_full, "sha256 = \"e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0\"\n");
+    str_builder_add_cstr(sb_full, "patches = [\"fix-musl.patch\", \"agnos-paths.patch\"]\n\n");
+    str_builder_add_cstr(sb_full, "[depends]\n");
+    str_builder_add_cstr(sb_full, "runtime = [\"glibc\", \"zlib\"]\n");
+    str_builder_add_cstr(sb_full, "build = [\"perl\", \"make\"]\n\n");
+    str_builder_add_cstr(sb_full, "[build]\n");
+    str_builder_add_cstr(sb_full, "configure = \"./config --prefix=/usr --openssldir=/etc/ssl shared\"\n");
+    str_builder_add_cstr(sb_full, "make = \"make -j4\"\n");
+    str_builder_add_cstr(sb_full, "check = \"make test\"\n");
+    str_builder_add_cstr(sb_full, "install = \"make install\"\n");
+    str_builder_add_cstr(sb_full, "pre_build = \"sed -i 's/foo/bar/' Makefile.in\"\n");
+    str_builder_add_cstr(sb_full, "post_install = \"rm -rf doc\"\n\n");
+    str_builder_add_cstr(sb_full, "[security]\n");
+    str_builder_add_cstr(sb_full, "hardening = [\"pie\", \"fullrelro\", \"fortify\", \"stackprotector\"]\n");
+    str_builder_add_cstr(sb_full, "cflags = \"-O2\"\n");
+    str_builder_add_cstr(sb_full, "ldflags = \"-Wl,--as-needed\"\n");
+    var cyml_full = str_cstr(str_builder_build(sb_full));
+    var r_full = recipe_parse_str(cyml_full, strlen(cyml_full));
+    assert(r_full != 0, "full parse succeeds");
+    var pm = recipe_package(r_full);
+    assert(streq(pkg_name(pm), "openssl"), "full pkg.name");
+    assert_eq(pkg_release(pm), 3, "release = 3");
+    assert(streq(pkg_arch(pm), "x86_64"), "arch = x86_64");
+    assert_eq(vec_len(pkg_groups(pm)), 2, "groups length");
+    assert(streq(vec_get(pkg_groups(pm), 0), "base"), "groups[0]");
+    assert(streq(vec_get(pkg_groups(pm), 1), "crypto"), "groups[1]");
+    var ss = recipe_source(r_full);
+    assert_eq(vec_len(src_patches(ss)), 2, "patches length");
+    assert(streq(vec_get(src_patches(ss), 0), "fix-musl.patch"), "patches[0]");
+    var dd = recipe_depends(r_full);
+    assert_eq(vec_len(dep_runtime(dd)), 2, "runtime length");
+    assert(streq(vec_get(dep_runtime(dd), 0), "glibc"), "runtime[0]");
+    assert(streq(vec_get(dep_runtime(dd), 1), "zlib"), "runtime[1]");
+    assert_eq(vec_len(dep_build(dd)), 2, "build length");
+    assert(streq(vec_get(dep_build(dd), 1), "make"), "build[1]");
+    var bb = recipe_build(r_full);
+    assert(streq(bld_configure(bb), "./config --prefix=/usr --openssldir=/etc/ssl shared"), "build.configure");
+    assert(streq(bld_make(bb), "make -j4"), "build.make");
+    assert(streq(bld_check(bb), "make test"), "build.check");
+    assert(streq(bld_install(bb), "make install"), "build.install");
+    assert(streq(bld_pre_build(bb), "sed -i 's/foo/bar/' Makefile.in"), "build.pre_build");
+    assert(streq(bld_post_install(bb), "rm -rf doc"), "build.post_install");
+    var sf = recipe_security(r_full);
+    assert_eq(vec_len(sec_hardening(sf)), 4, "hardening length");
+    assert_eq(vec_get(sec_hardening(sf), 0), HF_PIE, "hardening[0] = HF_PIE");
+    assert_eq(vec_get(sec_hardening(sf), 1), HF_FULL_RELRO, "hardening[1] = HF_FULL_RELRO");
+    assert_eq(vec_get(sec_hardening(sf), 2), HF_FORTIFY, "hardening[2] = HF_FORTIFY");
+    assert_eq(vec_get(sec_hardening(sf), 3), HF_STACK_PROTECTOR, "hardening[3] = HF_STACK_PROTECTOR");
+    assert(streq(sec_cflags(sf), "-O2"), "cflags");
+    assert(streq(sec_ldflags(sf), "-Wl,--as-needed"), "ldflags");
+
+    test_group("recipe_parse_str: CYML with markdown body — body ignored, header parses");
+    var sb_body = str_builder_new();
+    str_builder_add_cstr(sb_body, "[package]\n");
+    str_builder_add_cstr(sb_body, "name = \"withbody\"\n");
+    str_builder_add_cstr(sb_body, "version = \"0.1\"\n");
+    str_builder_add_cstr(sb_body, "description = \"has prose\"\n");
+    str_builder_add_cstr(sb_body, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_body, "[source]\n");
+    str_builder_add_cstr(sb_body, "url = \"https://example.com/x.tar.gz\"\n");
+    str_builder_add_cstr(sb_body, "sha256 = \"abc\"\n");
+    str_builder_add_cstr(sb_body, "\n---\n\n");
+    str_builder_add_cstr(sb_body, "# Build notes\n\n");
+    str_builder_add_cstr(sb_body, "This section is ignored by the parser.\n");
+    var cyml_body = str_cstr(str_builder_build(sb_body));
+    var r_body = recipe_parse_str(cyml_body, strlen(cyml_body));
+    assert(r_body != 0, "body-bearing recipe parses");
+    assert(streq(pkg_name(recipe_package(r_body)), "withbody"), "header fields still work");
+
+    test_group("recipe_parse_str: missing [package] -> 0");
+    var sb_nopkg = str_builder_new();
+    str_builder_add_cstr(sb_nopkg, "[source]\n");
+    str_builder_add_cstr(sb_nopkg, "url = \"https://x/y\"\n");
+    str_builder_add_cstr(sb_nopkg, "sha256 = \"abc\"\n");
+    var cyml_nopkg = str_cstr(str_builder_build(sb_nopkg));
+    assert_eq(recipe_parse_str(cyml_nopkg, strlen(cyml_nopkg)), 0, "no [package] -> 0");
+
+    test_group("recipe_parse_str: missing [source] -> 0");
+    var sb_nosrc = str_builder_new();
+    str_builder_add_cstr(sb_nosrc, "[package]\n");
+    str_builder_add_cstr(sb_nosrc, "name = \"x\"\n");
+    str_builder_add_cstr(sb_nosrc, "version = \"1\"\n");
+    str_builder_add_cstr(sb_nosrc, "description = \"y\"\n");
+    str_builder_add_cstr(sb_nosrc, "license = \"MIT\"\n");
+    var cyml_nosrc = str_cstr(str_builder_build(sb_nosrc));
+    assert_eq(recipe_parse_str(cyml_nosrc, strlen(cyml_nosrc)), 0, "no [source] -> 0");
+
+    test_group("recipe_parse_str: missing required field -> 0");
+    var sb_noname = str_builder_new();
+    str_builder_add_cstr(sb_noname, "[package]\n");
+    str_builder_add_cstr(sb_noname, "version = \"1\"\n");
+    str_builder_add_cstr(sb_noname, "description = \"y\"\n");
+    str_builder_add_cstr(sb_noname, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_noname, "[source]\n");
+    str_builder_add_cstr(sb_noname, "url = \"https://x/y\"\n");
+    str_builder_add_cstr(sb_noname, "sha256 = \"abc\"\n");
+    var cyml_noname = str_cstr(str_builder_build(sb_noname));
+    assert_eq(recipe_parse_str(cyml_noname, strlen(cyml_noname)), 0, "missing name -> 0");
+
+    test_group("recipe_parse_str: missing url -> 0");
+    var sb_nourl = str_builder_new();
+    str_builder_add_cstr(sb_nourl, "[package]\n");
+    str_builder_add_cstr(sb_nourl, "name = \"x\"\n");
+    str_builder_add_cstr(sb_nourl, "version = \"1\"\n");
+    str_builder_add_cstr(sb_nourl, "description = \"y\"\n");
+    str_builder_add_cstr(sb_nourl, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_nourl, "[source]\n");
+    str_builder_add_cstr(sb_nourl, "sha256 = \"abc\"\n");
+    var cyml_nourl = str_cstr(str_builder_build(sb_nourl));
+    assert_eq(recipe_parse_str(cyml_nourl, strlen(cyml_nourl)), 0, "missing url -> 0");
+
+    test_group("recipe_parse_str: unknown hardening flag -> 0");
+    var sb_badhf = str_builder_new();
+    str_builder_add_cstr(sb_badhf, "[package]\n");
+    str_builder_add_cstr(sb_badhf, "name = \"x\"\n");
+    str_builder_add_cstr(sb_badhf, "version = \"1\"\n");
+    str_builder_add_cstr(sb_badhf, "description = \"y\"\n");
+    str_builder_add_cstr(sb_badhf, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_badhf, "[source]\n");
+    str_builder_add_cstr(sb_badhf, "url = \"https://x/y\"\n");
+    str_builder_add_cstr(sb_badhf, "sha256 = \"abc\"\n\n");
+    str_builder_add_cstr(sb_badhf, "[security]\n");
+    str_builder_add_cstr(sb_badhf, "hardening = [\"pie\", \"nonsense\"]\n");
+    var cyml_badhf = str_cstr(str_builder_build(sb_badhf));
+    assert_eq(recipe_parse_str(cyml_badhf, strlen(cyml_badhf)), 0, "unknown hardening flag -> 0");
+
+    test_group("recipe_parse_str: recognized hardening aliases parse");
+    var sb_alias = str_builder_new();
+    str_builder_add_cstr(sb_alias, "[package]\n");
+    str_builder_add_cstr(sb_alias, "name = \"x\"\n");
+    str_builder_add_cstr(sb_alias, "version = \"1\"\n");
+    str_builder_add_cstr(sb_alias, "description = \"y\"\n");
+    str_builder_add_cstr(sb_alias, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_alias, "[source]\n");
+    str_builder_add_cstr(sb_alias, "url = \"https://x/y\"\n");
+    str_builder_add_cstr(sb_alias, "sha256 = \"abc\"\n\n");
+    str_builder_add_cstr(sb_alias, "[security]\n");
+    str_builder_add_cstr(sb_alias, "hardening = [\"full-relro\", \"stack_protector\"]\n");
+    var cyml_alias = str_cstr(str_builder_build(sb_alias));
+    var r_alias = recipe_parse_str(cyml_alias, strlen(cyml_alias));
+    assert(r_alias != 0, "alias parse succeeds");
+    assert_eq(vec_get(sec_hardening(recipe_security(r_alias)), 0), HF_FULL_RELRO, "full-relro -> HF_FULL_RELRO");
+    assert_eq(vec_get(sec_hardening(recipe_security(r_alias)), 1), HF_STACK_PROTECTOR, "stack_protector -> HF_STACK_PROTECTOR");
+
+    test_group("_parse_array_cstrs: empty and whitespace arrays");
+    assert_eq(vec_len(_parse_array_cstrs(str_from("[]"))), 0, "empty array -> empty vec");
+    assert_eq(vec_len(_parse_array_cstrs(str_from("[ ]"))), 0, "whitespace-only array -> empty vec");
+    var single = _parse_array_cstrs(str_from("[\"one\"]"));
+    assert_eq(vec_len(single), 1, "single element length");
+    assert(streq(vec_get(single, 0), "one"), "single element value");
 
     return assert_summary();
 }
