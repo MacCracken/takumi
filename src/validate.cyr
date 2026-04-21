@@ -130,3 +130,140 @@ fn version_has_multiple_parts(s) {
     }
     return 0;
 }
+
+# ---------------------------------------------------------------------------
+# validate_recipe — orchestrator.
+#
+# Rust's TakumiBuildSystem::validate_recipe short-circuits at the first
+# fatal issue via `bail!`. This port accumulates all errors and all
+# warnings in one pass so the caller can surface every problem at once
+# (better UX for recipe authors). Within a single *entity* (package
+# name, version, etc.) we still stop at the first error — chained
+# errors on the same field just repeat the underlying problem.
+#
+# ValidateResult layout: { errors: vec<cstr>, warnings: vec<cstr> }.
+# A recipe is accepted when `val_ok(result) == 1` (i.e. no errors).
+# Warnings are advisory and don't block the build.
+# ---------------------------------------------------------------------------
+
+enum ValOff {
+    VAL_ERRORS = 0;
+    VAL_WARNINGS = 8;
+    VAL_SIZE = 16;
+}
+
+fn val_new(errors, warnings) {
+    var v = alloc(VAL_SIZE);
+    store64(v + VAL_ERRORS, errors);
+    store64(v + VAL_WARNINGS, warnings);
+    return v;
+}
+
+fn val_errors(v) { return load64(v + VAL_ERRORS); }
+fn val_warnings(v) { return load64(v + VAL_WARNINGS); }
+fn val_ok(v) {
+    if (vec_len(val_errors(v)) == 0) { return 1; }
+    return 0;
+}
+
+# Walk a dep vec and push at most one error per entry. The errors vec
+# is mutated in place; nothing else is returned.
+fn _validate_deps(deps, errors) {
+    var n = vec_len(deps);
+    var i = 0;
+    while (i < n) {
+        var d = vec_get(deps, i);
+        if (strlen(d) == 0) {
+            vec_push(errors, "dependency name is empty");
+        } elif (name_contains_unsafe(d) == 1) {
+            vec_push(errors, "dependency name contains unsafe characters");
+        } elif (name_has_only_allowed_chars(d) == 0) {
+            vec_push(errors, "dependency name contains invalid characters");
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn validate_recipe(recipe) {
+    var errors = vec_new();
+    var warnings = vec_new();
+
+    var pkg = recipe_package(recipe);
+    var src = recipe_source(recipe);
+    var dep = recipe_depends(recipe);
+    var bld = recipe_build(recipe);
+    var sec = recipe_security(recipe);
+
+    # Package name — fatal checks, first-hit wins.
+    var name = pkg_name(pkg);
+    if (strlen(name) == 0) {
+        vec_push(errors, "recipe has empty package name");
+    } elif (name_contains_unsafe(name) == 1) {
+        vec_push(errors, "package name contains unsafe characters (/, .., space, or backslash)");
+    } elif (name_has_only_allowed_chars(name) == 0) {
+        vec_push(errors, "package name contains invalid characters (only A-Z, a-z, 0-9, '.', '-', '_' allowed)");
+    }
+
+    # Package version — fatal if empty; warn if shape looks non-semver.
+    var version = pkg_version(pkg);
+    if (strlen(version) == 0) {
+        vec_push(errors, "recipe has empty package version");
+    } elif (version_has_multiple_parts(version) == 0) {
+        vec_push(warnings, "version may not be a valid version string (no '.' separator)");
+    }
+
+    # Package description / license — advisory.
+    if (strlen(pkg_description(pkg)) == 0) {
+        vec_push(warnings, "package description is empty");
+    }
+    if (strlen(pkg_license(pkg)) == 0) {
+        vec_push(warnings, "package license is empty");
+    }
+
+    # Release — Rust used `u32` but warns when 0 (should start at 1).
+    if (pkg_release(pkg) == 0) {
+        vec_push(warnings, "release number is 0, should start at 1");
+    }
+
+    # Source URL — fatal if empty or wrong scheme.
+    var url = src_url(src);
+    if (strlen(url) == 0) {
+        vec_push(errors, "recipe has empty source URL");
+    } elif (url_has_valid_scheme(url) == 0) {
+        vec_push(errors, "source URL uses an unsupported scheme; only https:// and http:// are allowed");
+    }
+
+    # Source sha256 — fatal if empty; warn if shape is wrong. The Rust
+    # impl warned (not errored) on malformed hex because a too-short
+    # placeholder is common during recipe drafting.
+    var sha = src_sha256(src);
+    if (strlen(sha) == 0) {
+        vec_push(errors, "recipe has empty source sha256");
+    } elif (sha256_is_lowercase_hex64(sha) == 0) {
+        vec_push(warnings, "source sha256 is not a valid lowercase 64-character hex digest");
+    }
+
+    # Build steps — advisory when the recipe has no runnable phase.
+    # Nested ifs rather than a 3-way || (safer given Cyrius's relaxed
+    # short-circuit behavior).
+    if (bld_configure(bld) == 0) {
+        if (bld_make(bld) == 0) {
+            if (bld_install(bld) == 0) {
+                vec_push(warnings, "recipe has no build steps defined");
+            }
+        }
+    }
+
+    # Hardening — advisory but nearly always a mistake for a real
+    # package. Maintainers who explicitly want no hardening can add
+    # a stub (e.g. only `pie`) to silence.
+    if (vec_len(sec_hardening(sec)) == 0) {
+        vec_push(warnings, "no hardening flags specified");
+    }
+
+    _validate_deps(dep_runtime(dep), errors);
+    _validate_deps(dep_build(dep), errors);
+
+    return val_new(errors, warnings);
+}

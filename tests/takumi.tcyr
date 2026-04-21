@@ -29,6 +29,30 @@ fn set_deps(adj, pkg, d1, d2, d3) {
     return 0;
 }
 
+# ---- validate_recipe baseline fixtures --------------------------------
+
+fn _valid_pkg() {
+    return pkg_new("hello", "1.0.0", "greeting", "MIT", vec_new(), 1, 0);
+}
+fn _valid_src() {
+    return src_new("https://example.com/hello.tar.gz",
+                   "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
+                   vec_new());
+}
+fn _valid_dep() { return dep_new(vec_new(), vec_new()); }
+fn _valid_bld() { return bld_new(0, "make", 0, "make install", 0, 0); }
+fn _valid_sec() {
+    var h = vec_new();
+    vec_push(h, HF_PIE);
+    return sec_new(h, 0, 0);
+}
+fn _valid_recipe() {
+    return recipe_new(_valid_pkg(), _valid_src(), _valid_dep(), _valid_bld(), _valid_sec());
+}
+
+fn _has_error(v, msg) { return cstr_vec_contains(val_errors(v), msg); }
+fn _has_warning(v, msg) { return cstr_vec_contains(val_warnings(v), msg); }
+
 fn main() {
     alloc_init();
 
@@ -808,6 +832,191 @@ fn main() {
     var single = _parse_array_cstrs(str_from("[\"one\"]"));
     assert_eq(vec_len(single), 1, "single element length");
     assert(streq(vec_get(single, 0), "one"), "single element value");
+
+    test_group("validate_recipe: clean recipe passes with no errors or warnings");
+    var v_clean = validate_recipe(_valid_recipe());
+    assert_eq(val_ok(v_clean), 1, "val_ok");
+    assert_eq(vec_len(val_errors(v_clean)), 0, "no errors");
+    assert_eq(vec_len(val_warnings(v_clean)), 0, "no warnings");
+
+    test_group("validate_recipe: empty name -> error");
+    var v_noname = validate_recipe(recipe_new(
+        pkg_new("", "1.0.0", "greeting", "MIT", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_noname), 0, "rejected");
+    assert_eq(_has_error(v_noname, "recipe has empty package name"), 1, "specific message");
+
+    test_group("validate_recipe: unsafe chars in name -> error");
+    var v_unsafe = validate_recipe(recipe_new(
+        pkg_new("bad/name", "1.0", "d", "L", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_unsafe), 0, "rejected");
+    assert_eq(_has_error(v_unsafe, "package name contains unsafe characters (/, .., space, or backslash)"), 1, "specific message");
+
+    test_group("validate_recipe: disallowed chars in name -> error");
+    var v_atbang = validate_recipe(recipe_new(
+        pkg_new("bad@name", "1.0", "d", "L", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_atbang), 0, "rejected");
+    assert_eq(_has_error(v_atbang, "package name contains invalid characters (only A-Z, a-z, 0-9, '.', '-', '_' allowed)"), 1, "specific message");
+
+    test_group("validate_recipe: empty version -> error");
+    var v_nover = validate_recipe(recipe_new(
+        pkg_new("hello", "", "d", "L", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_nover), 0, "rejected");
+    assert_eq(_has_error(v_nover, "recipe has empty package version"), 1, "specific message");
+
+    test_group("validate_recipe: single-component version -> warning");
+    var v_ver1 = validate_recipe(recipe_new(
+        pkg_new("hello", "7", "d", "L", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_ver1), 1, "still valid");
+    assert_eq(_has_warning(v_ver1, "version may not be a valid version string (no '.' separator)"), 1, "warning present");
+
+    test_group("validate_recipe: empty description -> warning");
+    var v_nodesc = validate_recipe(recipe_new(
+        pkg_new("hello", "1.0", "", "L", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_nodesc), 1, "still valid");
+    assert_eq(_has_warning(v_nodesc, "package description is empty"), 1, "warning present");
+
+    test_group("validate_recipe: empty license -> warning");
+    var v_nolic = validate_recipe(recipe_new(
+        pkg_new("hello", "1.0", "d", "", vec_new(), 1, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_nolic), 1, "still valid");
+    assert_eq(_has_warning(v_nolic, "package license is empty"), 1, "warning present");
+
+    test_group("validate_recipe: release = 0 -> warning");
+    var v_r0 = validate_recipe(recipe_new(
+        pkg_new("hello", "1.0", "d", "L", vec_new(), 0, 0),
+        _valid_src(), _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_r0), 1, "still valid");
+    assert_eq(_has_warning(v_r0, "release number is 0, should start at 1"), 1, "warning present");
+
+    test_group("validate_recipe: empty source url -> error");
+    var v_nourl2 = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new("", "abc", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_nourl2), 0, "rejected");
+    assert_eq(_has_error(v_nourl2, "recipe has empty source URL"), 1, "specific message");
+
+    test_group("validate_recipe: non-http(s) url -> error");
+    var v_ftp = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new("ftp://example.com/x", "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_ftp), 0, "rejected");
+    assert_eq(_has_error(v_ftp, "source URL uses an unsupported scheme; only https:// and http:// are allowed"), 1, "specific message");
+
+    test_group("validate_recipe: empty sha256 -> error");
+    var v_nosha = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new("https://x/y", "", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_nosha), 0, "rejected");
+    assert_eq(_has_error(v_nosha, "recipe has empty source sha256"), 1, "specific message");
+
+    test_group("validate_recipe: malformed sha256 -> warning (not fatal)");
+    var v_shortsha = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new("https://x/y", "abc123", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_shortsha), 1, "still valid (placeholder sha tolerated)");
+    assert_eq(_has_warning(v_shortsha, "source sha256 is not a valid lowercase 64-character hex digest"), 1, "warning present");
+
+    test_group("validate_recipe: no build steps -> warning");
+    var v_nobld = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(), _valid_dep(),
+        bld_new(0, 0, 0, 0, 0, 0),
+        _valid_sec()));
+    assert_eq(val_ok(v_nobld), 1, "still valid");
+    assert_eq(_has_warning(v_nobld, "recipe has no build steps defined"), 1, "warning present");
+
+    test_group("validate_recipe: build step present silences no-build-steps warning");
+    var v_has_configure = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(), _valid_dep(),
+        bld_new("./configure", 0, 0, 0, 0, 0),
+        _valid_sec()));
+    assert_eq(_has_warning(v_has_configure, "recipe has no build steps defined"), 0, "configure alone suffices");
+    var v_has_install = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(), _valid_dep(),
+        bld_new(0, 0, 0, "make install", 0, 0),
+        _valid_sec()));
+    assert_eq(_has_warning(v_has_install, "recipe has no build steps defined"), 0, "install alone suffices");
+
+    test_group("validate_recipe: no hardening flags -> warning");
+    var v_nohard = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(), _valid_dep(), _valid_bld(),
+        sec_new(vec_new(), 0, 0)));
+    assert_eq(val_ok(v_nohard), 1, "still valid");
+    assert_eq(_has_warning(v_nohard, "no hardening flags specified"), 1, "warning present");
+
+    test_group("validate_recipe: unsafe dep name -> error");
+    var bad_deps_rt = vec_new();
+    vec_push(bad_deps_rt, "glibc");
+    vec_push(bad_deps_rt, "../etc/passwd");
+    var v_baddep = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(),
+        dep_new(bad_deps_rt, vec_new()),
+        _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_baddep), 0, "rejected");
+    assert_eq(_has_error(v_baddep, "dependency name contains unsafe characters"), 1, "specific message");
+
+    test_group("validate_recipe: invalid chars in build dep -> error");
+    var bad_deps_bd = vec_new();
+    vec_push(bad_deps_bd, "make");
+    vec_push(bad_deps_bd, "perl@5");
+    var v_bad_bd = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(),
+        dep_new(vec_new(), bad_deps_bd),
+        _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_bad_bd), 0, "rejected");
+    assert_eq(_has_error(v_bad_bd, "dependency name contains invalid characters"), 1, "specific message");
+
+    test_group("validate_recipe: empty dep name -> error");
+    var empty_dep = vec_new();
+    vec_push(empty_dep, "");
+    var v_emptydep = validate_recipe(recipe_new(
+        _valid_pkg(), _valid_src(),
+        dep_new(empty_dep, vec_new()),
+        _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_emptydep), 0, "rejected");
+    assert_eq(_has_error(v_emptydep, "dependency name is empty"), 1, "specific message");
+
+    test_group("validate_recipe: multiple issues reported together");
+    # empty license (warn), release 0 (warn), no hardening (warn),
+    # ftp scheme (error), bad dep name (error).
+    var deps_rt_multi = vec_new();
+    vec_push(deps_rt_multi, "bad dep");
+    var v_multi = validate_recipe(recipe_new(
+        pkg_new("hello", "1.0", "d", "", vec_new(), 0, 0),
+        src_new("ftp://example.com/x",
+                "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
+                vec_new()),
+        dep_new(deps_rt_multi, vec_new()),
+        _valid_bld(),
+        sec_new(vec_new(), 0, 0)));
+    assert_eq(val_ok(v_multi), 0, "rejected");
+    # Both errors collected in a single pass:
+    assert_eq(_has_error(v_multi, "source URL uses an unsupported scheme; only https:// and http:// are allowed"), 1, "ftp error");
+    assert_eq(_has_error(v_multi, "dependency name contains unsafe characters"), 1, "bad dep error");
+    # All three warnings also present.
+    assert_eq(_has_warning(v_multi, "package license is empty"), 1, "license warning");
+    assert_eq(_has_warning(v_multi, "release number is 0, should start at 1"), 1, "release warning");
+    assert_eq(_has_warning(v_multi, "no hardening flags specified"), 1, "hardening warning");
+
+    test_group("val_ok / accessors");
+    var errs = vec_new();
+    vec_push(errs, "oops");
+    var v_custom = val_new(errs, vec_new());
+    assert_eq(val_ok(v_custom), 0, "non-empty errors -> not ok");
+    assert_eq(vec_len(val_errors(v_custom)), 1, "errors accessible");
+    var v_clean2 = val_new(vec_new(), vec_new());
+    assert_eq(val_ok(v_clean2), 1, "empty errors -> ok");
+    assert_eq(vec_len(val_warnings(v_clean2)), 0, "warnings accessible");
 
     return assert_summary();
 }

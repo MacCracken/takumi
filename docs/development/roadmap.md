@@ -5,7 +5,7 @@
 - [x] Core recipe types with serde support
 - [x] Recipe parsing from TOML files (single and recursive directory scan) — Rust only; being replaced with CYML (TOML header + markdown body) in the Cyrius port
 - [x] Recipe validation: name safety, URL scheme, SHA-256 format, dependency
-      name validation
+      name validation (Cyrius port accumulates all errors+warnings in one pass)
 - [x] Build order resolution via topological sort (Kahn's algorithm)
 - [x] Security hardening flag generation (CFLAGS/LDFLAGS)
 - [x] `.ark` manifest creation with file list and SHA-256 hashes

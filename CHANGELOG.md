@@ -95,6 +95,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header only, missing required sections/fields → 0, unknown
   hardening flag → 0, alias parsing works, array edge cases).
   Total suite: **346 assertions, 0 failures**.
+- `validate_recipe` orchestrator in `src/validate.cyr` — composes the
+  bite-#2 predicates over a parsed `BuildRecipe`. Returns a
+  `ValidateResult` with separate `errors` and `warnings` vecs; the
+  caller treats empty errors as Ok. Deliberate departure from Rust:
+  the Rust impl short-circuits at the first fatal via `bail!`; this
+  port accumulates *all* errors and *all* warnings in one pass so a
+  recipe author sees every problem at once. Within a single entity
+  (the name, the version, a given dep) we still stop at the first
+  hit to avoid duplicate messages for the same underlying issue.
+- Error-emitting rules (fatal): empty `package.name`, unsafe or
+  disallowed chars in name, empty `package.version`, empty
+  `source.url`, non-http(s) scheme, empty `source.sha256`, empty /
+  unsafe / disallowed chars in any dep name.
+- Warning-emitting rules (advisory): single-component version,
+  empty description, empty license, `release == 0`, malformed
+  SHA-256 (length or hex), no build steps at all, no hardening.
+- 49 new validator tests (clean recipe, every error path, every
+  warning path, build-step silencing rules, multi-issue accumulation,
+  `val_ok` accessor semantics). Total suite: **395 assertions, 0
+  failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 
