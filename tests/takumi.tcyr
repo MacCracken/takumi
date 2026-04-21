@@ -7,6 +7,7 @@ include "src/flags.cyr"
 include "src/recipe.cyr"
 include "src/parse.cyr"
 include "src/ark.cyr"
+include "src/package.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -1113,6 +1114,121 @@ fn main() {
     assert(streq(afe_sha256(direct), "abc"), "sha");
     assert_eq(afe_size(direct), 512, "size");
     assert_eq(afe_file_type(direct), ARK_FT_REGULAR, "type");
+
+    test_group("_ark_type_for: /etc/ is Config");
+    assert_eq(_ark_type_for("/etc/config.conf"), ARK_FT_CONFIG, "/etc/config.conf");
+    assert_eq(_ark_type_for("/etc/"), ARK_FT_CONFIG, "bare '/etc/' matches prefix (still Config)");
+    assert_eq(_ark_type_for("/etc/a"), ARK_FT_CONFIG, "single byte past /etc/ is Config");
+    assert_eq(_ark_type_for("/usr/bin/hello"), ARK_FT_REGULAR, "/usr/bin is Regular");
+    assert_eq(_ark_type_for("/etcalike"), ARK_FT_REGULAR, "'/etcalike' not confused with /etc/");
+    assert_eq(_ark_type_for(""), ARK_FT_REGULAR, "empty path is Regular");
+    assert_eq(_ark_type_for("/et"), ARK_FT_REGULAR, "too-short prefix");
+    assert_eq(_ark_type_for("/etc"), ARK_FT_REGULAR, "/etc without trailing slash is Regular");
+
+    test_group("_afe_sort: sorts by path lexicographically");
+    var afesv = vec_new();
+    vec_push(afesv, afe_regular("/usr/bin/z", "a", 1));
+    vec_push(afesv, afe_regular("/usr/bin/a", "b", 2));
+    vec_push(afesv, afe_directory("/usr"));
+    vec_push(afesv, afe_regular("/usr/bin/m", "c", 3));
+    _afe_sort(afesv);
+    assert(streq(afe_path(vec_get(afesv, 0)), "/usr"), "directory sorts first (shorter prefix)");
+    assert(streq(afe_path(vec_get(afesv, 1)), "/usr/bin/a"), "then /usr/bin/a");
+    assert(streq(afe_path(vec_get(afesv, 2)), "/usr/bin/m"), "then /usr/bin/m");
+    assert(streq(afe_path(vec_get(afesv, 3)), "/usr/bin/z"), "then /usr/bin/z");
+
+    test_group("_afe_sort: empty / single / pre-sorted are no-ops");
+    _afe_sort(vec_new());
+    var one = vec_new();
+    vec_push(one, afe_regular("/x", "a", 1));
+    _afe_sort(one);
+    assert(streq(afe_path(vec_get(one, 0)), "/x"), "single preserved");
+    var pre = vec_new();
+    vec_push(pre, afe_regular("/a", "1", 1));
+    vec_push(pre, afe_regular("/b", "2", 2));
+    vec_push(pre, afe_regular("/c", "3", 3));
+    _afe_sort(pre);
+    assert(streq(afe_path(vec_get(pre, 0)), "/a"), "pre-sorted first");
+    assert(streq(afe_path(vec_get(pre, 2)), "/c"), "pre-sorted last");
+
+    test_group("sum_installed_size: dir entries contribute 0, files their size");
+    var ssv = vec_new();
+    vec_push(ssv, afe_directory("/usr"));
+    vec_push(ssv, afe_regular("/usr/a", "h", 100));
+    vec_push(ssv, afe_regular("/usr/b", "h", 250));
+    vec_push(ssv, afe_config("/etc/x", "h", 42));
+    assert_eq(sum_installed_size(ssv), 392, "100 + 250 + 42 = 392");
+    assert_eq(sum_installed_size(vec_new()), 0, "empty -> 0");
+
+    test_group("create_file_list: real fake-root walk");
+    # Build a tiny install tree under /tmp, walk it, cleanup.
+    # Root:  /tmp/takumi-b6b-<pid-ish>/
+    #   etc/
+    #     ark.conf   (content "k=1\n", 4 bytes)
+    #   usr/
+    #     bin/
+    #       hello    (content "Hello world\n", 12 bytes)
+    var tmp_root = "/tmp/takumi-b6b-test";
+    # sys_rmdir / sys_unlink tolerate missing paths returning an error
+    # — we just want a clean slate. Order matters: unlink files first.
+    sys_unlink("/tmp/takumi-b6b-test/etc/ark.conf");
+    sys_unlink("/tmp/takumi-b6b-test/usr/bin/hello");
+    sys_rmdir("/tmp/takumi-b6b-test/etc");
+    sys_rmdir("/tmp/takumi-b6b-test/usr/bin");
+    sys_rmdir("/tmp/takumi-b6b-test/usr");
+    sys_rmdir(tmp_root);
+
+    assert_eq(sys_mkdir(tmp_root, 0x1FF), 0, "mkdir root");
+    assert_eq(sys_mkdir("/tmp/takumi-b6b-test/etc", 0x1FF), 0, "mkdir etc");
+    assert_eq(sys_mkdir("/tmp/takumi-b6b-test/usr", 0x1FF), 0, "mkdir usr");
+    assert_eq(sys_mkdir("/tmp/takumi-b6b-test/usr/bin", 0x1FF), 0, "mkdir usr/bin");
+
+    var conf_bytes = "k=1\n";
+    var hello_bytes = "Hello world\n";
+    assert(file_write_all("/tmp/takumi-b6b-test/etc/ark.conf", conf_bytes, strlen(conf_bytes)) > 0, "write conf");
+    assert(file_write_all("/tmp/takumi-b6b-test/usr/bin/hello", hello_bytes, strlen(hello_bytes)) > 0, "write hello");
+
+    var listing = create_file_list(tmp_root);
+    # Expected entries (sorted): /etc, /etc/ark.conf, /usr, /usr/bin, /usr/bin/hello
+    assert_eq(vec_len(listing), 5, "5 entries");
+    assert(streq(afe_path(vec_get(listing, 0)), "/etc"), "[0] /etc");
+    assert_eq(afe_file_type(vec_get(listing, 0)), ARK_FT_DIRECTORY, "[0] type DIRECTORY");
+    assert(streq(afe_path(vec_get(listing, 1)), "/etc/ark.conf"), "[1] /etc/ark.conf");
+    assert_eq(afe_file_type(vec_get(listing, 1)), ARK_FT_CONFIG, "[1] type CONFIG");
+    assert_eq(afe_size(vec_get(listing, 1)), 4, "[1] size 4");
+    assert(streq(afe_path(vec_get(listing, 2)), "/usr"), "[2] /usr");
+    assert_eq(afe_file_type(vec_get(listing, 2)), ARK_FT_DIRECTORY, "[2] type DIRECTORY");
+    assert(streq(afe_path(vec_get(listing, 3)), "/usr/bin"), "[3] /usr/bin");
+    assert_eq(afe_file_type(vec_get(listing, 3)), ARK_FT_DIRECTORY, "[3] type DIRECTORY");
+    assert(streq(afe_path(vec_get(listing, 4)), "/usr/bin/hello"), "[4] /usr/bin/hello");
+    assert_eq(afe_file_type(vec_get(listing, 4)), ARK_FT_REGULAR, "[4] type REGULAR");
+    assert_eq(afe_size(vec_get(listing, 4)), 12, "[4] size 12");
+
+    # Compare the walker's hash against a direct sha256_hex call on the same bytes.
+    sha256_global_init();
+    var expected_hello = sha256_hex(hello_bytes, strlen(hello_bytes));
+    assert(streq(afe_sha256(vec_get(listing, 4)), expected_hello), "[4] hash matches direct sha256_hex");
+    var expected_conf = sha256_hex(conf_bytes, strlen(conf_bytes));
+    assert(streq(afe_sha256(vec_get(listing, 1)), expected_conf), "[1] hash matches direct sha256_hex");
+
+    # Directory entries have no hash/size.
+    assert(streq(afe_sha256(vec_get(listing, 0)), ""), "[0] dir sha empty");
+    assert_eq(afe_size(vec_get(listing, 0)), 0, "[0] dir size 0");
+
+    # sum_installed_size over the real list.
+    assert_eq(sum_installed_size(listing), 16, "total = 4 + 12");
+
+    # Cleanup
+    sys_unlink("/tmp/takumi-b6b-test/etc/ark.conf");
+    sys_unlink("/tmp/takumi-b6b-test/usr/bin/hello");
+    sys_rmdir("/tmp/takumi-b6b-test/etc");
+    sys_rmdir("/tmp/takumi-b6b-test/usr/bin");
+    sys_rmdir("/tmp/takumi-b6b-test/usr");
+    sys_rmdir(tmp_root);
+
+    test_group("create_file_list: nonexistent root -> empty");
+    var no_listing = create_file_list("/tmp/takumi-does-not-exist-b6b");
+    assert_eq(vec_len(no_listing), 0, "missing root -> 0 entries");
 
     return assert_summary();
 }

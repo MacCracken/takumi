@@ -11,4 +11,10 @@ entry = "src/main.cyr"
 output = "takumi"
 
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "assert", "hashmap", "tagged", "cyml", "toml", "fs"]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "assert", "hashmap", "tagged", "cyml", "toml", "fs", "freelist", "bigint", "ct", "keccak", "chrono"]
+
+[deps.sigil]
+git = "https://github.com/MacCracken/sigil.git"
+path = "../sigil"
+tag = "2.9.0"
+modules = ["dist/sigil.cyr"]

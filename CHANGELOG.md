@@ -135,6 +135,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 43 new ark-model tests (manifest full roundtrip via setters,
   zero-init defaults, setter-returns-pointer chainability, every
   file-entry variant). Total suite: **438 assertions, 0 failures**.
+- `[deps.sigil]` pinned to tag 2.9.0 (matches cyrius 5.5.23's own
+  sigil pin). Stdlib list extended with `freelist`, `bigint`, `ct`,
+  `keccak`, `chrono` — sigil's transitive requirements. Without
+  them the build produced runtime-garbage "undefined function"
+  warnings for `fl_alloc`, `ct_select`, `_keccak_absorb`,
+  `shake256`, and `clock_epoch_secs`.
+- `src/package.cyr` — fake-root tree walker + SHA-256 hasher +
+  `ArkFileEntry` list builder.
+  - `_hash_and_size(path)` reads a file once in 4 KiB chunks (same
+    stride as sigil's own `hash_file`), returning `{hex_cstr, size}`
+    so we don't pay a second `stat` syscall.
+  - `_ark_type_for(rel)` classifies `/etc/*` as `ARK_FT_CONFIG`,
+    everything else as `ARK_FT_REGULAR`. Directories are tagged by
+    the walker directly.
+  - `_walk` recurses the tree via `lib/fs.cyr`'s `dir_list` + `is_dir`.
+    Emits an entry for every directory and every regular file.
+  - `_afe_sort` insertion-sorts by path via `cstr_cmp` for
+    deterministic manifest output.
+  - `create_file_list(package_dir)` is the public entry point.
+    `sum_installed_size(entries)` sums sizes in one pass.
+  - **Known gap:** symlinks aren't explicitly classified. `is_dir`
+    follows links, so a symlinked directory is walked at its target
+    and cycles could loop. Recipes rarely produce such trees; a
+    future bite will add `lstat` + `readlink` when it matters.
+- Test fixture builds a real tree under `/tmp/takumi-b6b-test/`
+  (`mkdir`/`file_write_all`/`sys_unlink`/`sys_rmdir`), walks it,
+  checks ordering, file-type classification, and hash equality
+  against `sigil::sha256_hex` on the same bytes. 42 new tests.
+  Total suite: **480 assertions, 0 failures**.
+- Test-file gotcha: Cyrius rejects variable redeclaration even in
+  separate `test_group` blocks because all `fn main()` contents are
+  one scope. `var sv` from the bite-#3 sorting tests clashed with a
+  new one; renamed to `afesv`. Memory note
+  `feedback_cyrius_reserved_keywords` already covered adjacent
+  syntax pitfalls; this is another entry in the same bucket.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 

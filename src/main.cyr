@@ -8,6 +8,7 @@ include "src/flags.cyr"
 include "src/recipe.cyr"
 include "src/parse.cyr"
 include "src/ark.cyr"
+include "src/package.cyr"
 
 fn main() {
     alloc_init();
