@@ -1,0 +1,166 @@
+# takumi — build-engine container + per-build runtime context + log.
+#
+# Ports the remaining top-level Rust items that weren't pure-data
+# layout: BuildContext (runtime context for one package's build),
+# BuildLogEntry (per-package timestamped log line), and
+# TakumiBuildSystem (the stateful container that owns the recipe
+# map and the build log).
+#
+# Rust modelled timestamps as `DateTime<Utc>`; the port uses Unix
+# epoch seconds (i64), matching the ArkManifest.build_date choice.
+# Option fields (`completed_at`, `duration_secs`) use 0 for None.
+# The Rust `BuildStatus::Failed(String)` variant's payload lives on
+# `BuildLogEntry.fail_msg` — the enum is tag-only in the port.
+
+# ---------------------------------------------------------------------------
+# BuildContext — directories + arch resolved for one package build.
+# ---------------------------------------------------------------------------
+
+enum BcxOff {
+    BCX_RECIPE = 0;
+    BCX_SOURCE_DIR = 8;
+    BCX_BUILD_DIR = 16;
+    BCX_PACKAGE_DIR = 24;
+    BCX_OUTPUT_DIR = 32;
+    BCX_ARCH = 40;
+    BCX_SIZE = 48;
+}
+
+# 6 args, under the 9-arg ceiling.
+fn bcx_new(recipe, source_dir, build_dir, package_dir, output_dir, arch) {
+    var c = alloc(BCX_SIZE);
+    store64(c + BCX_RECIPE, recipe);
+    store64(c + BCX_SOURCE_DIR, source_dir);
+    store64(c + BCX_BUILD_DIR, build_dir);
+    store64(c + BCX_PACKAGE_DIR, package_dir);
+    store64(c + BCX_OUTPUT_DIR, output_dir);
+    store64(c + BCX_ARCH, arch);
+    return c;
+}
+
+fn bcx_recipe(c) { return load64(c + BCX_RECIPE); }
+fn bcx_source_dir(c) { return load64(c + BCX_SOURCE_DIR); }
+fn bcx_build_dir(c) { return load64(c + BCX_BUILD_DIR); }
+fn bcx_package_dir(c) { return load64(c + BCX_PACKAGE_DIR); }
+fn bcx_output_dir(c) { return load64(c + BCX_OUTPUT_DIR); }
+fn bcx_arch(c) { return load64(c + BCX_ARCH); }
+
+# ---------------------------------------------------------------------------
+# BuildLogEntry — timestamped log line for one package's build.
+# `completed_at` and `duration_secs` default to 0 (None).
+# `fail_msg` carries the message for BS_FAILED entries; 0 otherwise.
+# ---------------------------------------------------------------------------
+
+enum BleOff {
+    BLE_PACKAGE = 0;
+    BLE_STATUS = 8;
+    BLE_STARTED_AT = 16;
+    BLE_COMPLETED_AT = 24;
+    BLE_DURATION_SECS = 32;
+    BLE_FAIL_MSG = 40;
+    BLE_SIZE = 48;
+}
+
+# 6 args — under the 9-arg ceiling.
+fn ble_new(package, status, started_at, completed_at, duration_secs, fail_msg) {
+    var e = alloc(BLE_SIZE);
+    store64(e + BLE_PACKAGE, package);
+    store64(e + BLE_STATUS, status);
+    store64(e + BLE_STARTED_AT, started_at);
+    store64(e + BLE_COMPLETED_AT, completed_at);
+    store64(e + BLE_DURATION_SECS, duration_secs);
+    store64(e + BLE_FAIL_MSG, fail_msg);
+    return e;
+}
+
+fn ble_package(e) { return load64(e + BLE_PACKAGE); }
+fn ble_status(e) { return load64(e + BLE_STATUS); }
+fn ble_started_at(e) { return load64(e + BLE_STARTED_AT); }
+fn ble_completed_at(e) { return load64(e + BLE_COMPLETED_AT); }
+fn ble_duration_secs(e) { return load64(e + BLE_DURATION_SECS); }
+fn ble_fail_msg(e) { return load64(e + BLE_FAIL_MSG); }
+
+# ---------------------------------------------------------------------------
+# TakumiBuildSystem — engine container. Owns:
+#   recipes_dir, build_root, output_dir (cstring paths),
+#   loaded_recipes (cstr-keyed map → BuildRecipe ptr),
+#   build_log (vec of BuildLogEntry ptr).
+# ---------------------------------------------------------------------------
+
+enum TbsOff {
+    TBS_RECIPES_DIR = 0;
+    TBS_BUILD_ROOT = 8;
+    TBS_OUTPUT_DIR = 16;
+    TBS_LOADED_RECIPES = 24;
+    TBS_BUILD_LOG = 32;
+    TBS_SIZE = 40;
+}
+
+fn tbs_new(recipes_dir, build_root, output_dir) {
+    var s = alloc(TBS_SIZE);
+    store64(s + TBS_RECIPES_DIR, recipes_dir);
+    store64(s + TBS_BUILD_ROOT, build_root);
+    store64(s + TBS_OUTPUT_DIR, output_dir);
+    store64(s + TBS_LOADED_RECIPES, map_new());
+    store64(s + TBS_BUILD_LOG, vec_new());
+    return s;
+}
+
+fn tbs_recipes_dir(s) { return load64(s + TBS_RECIPES_DIR); }
+fn tbs_build_root(s) { return load64(s + TBS_BUILD_ROOT); }
+fn tbs_output_dir(s) { return load64(s + TBS_OUTPUT_DIR); }
+fn tbs_loaded_recipes(s) { return load64(s + TBS_LOADED_RECIPES); }
+fn tbs_build_log(s) { return load64(s + TBS_BUILD_LOG); }
+
+fn tbs_recipe_count(s) { return map_size(tbs_loaded_recipes(s)); }
+fn tbs_get_recipe(s, name_cstr) { return map_get(tbs_loaded_recipes(s), name_cstr); }
+fn tbs_insert_recipe(s, name_cstr, recipe) {
+    return map_set(tbs_loaded_recipes(s), name_cstr, recipe);
+}
+fn tbs_log_push(s, entry) { return vec_push(tbs_build_log(s), entry); }
+
+# Ends with "/" so _tbs_walk can append names cheaply via str_builder.
+fn _tbs_ends_with_cyml(name_cstr) {
+    var n = strlen(name_cstr);
+    if (n < 5) { return 0; }
+    if (memeq(name_cstr + n - 5, ".cyml", 5) == 1) { return 1; }
+    return 0;
+}
+
+# Recursive .cyml scan. Returns number of recipes loaded this call
+# (not counting errors — malformed recipes are silently skipped,
+# matching the Rust `warn!` + continue behavior).
+fn _tbs_walk(sys, dir_str, count_box) {
+    var names = dir_list(dir_str);
+    var n = vec_len(names);
+    var i = 0;
+    while (i < n) {
+        var full = path_join(dir_str, vec_get(names, i));
+        if (is_dir(full) == 1) {
+            _tbs_walk(sys, full, count_box);
+        } else {
+            var full_cstr = str_cstr(full);
+            if (_tbs_ends_with_cyml(full_cstr) == 1) {
+                var recipe = recipe_parse_file(full_cstr);
+                if (recipe != 0) {
+                    var name = pkg_name(recipe_package(recipe));
+                    tbs_insert_recipe(sys, name, recipe);
+                    store64(count_box, load64(count_box) + 1);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Recursively scan `sys`'s recipes_dir for `.cyml` files, parse each,
+# and insert into loaded_recipes. Returns the count of successful loads.
+# Duplicate names overwrite (matches Rust's warn-and-continue behavior
+# at the load_recipes_from_dir site).
+fn tbs_load_all_recipes(sys) {
+    var count_box = alloc(8);
+    store64(count_box, 0);
+    _tbs_walk(sys, str_from(tbs_recipes_dir(sys)), count_box);
+    return load64(count_box);
+}

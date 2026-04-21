@@ -1,0 +1,12 @@
+timestamp,label,bench,avg,min,max,iters
+20260421T100311Z,parity-baseline,parse_minimal_recipe,9us,9us,9us,1000
+20260421T100311Z,parity-baseline,parse_full_recipe,28us,28us,28us,1000
+20260421T100311Z,parity-baseline,validate_recipe,1us,1us,1us,10000
+20260421T100311Z,parity-baseline,generate_cflags,980ns,980ns,980ns,100000
+20260421T100311Z,parity-baseline,generate_ldflags_with_dedup,596ns,596ns,596ns,100000
+20260421T100311Z,parity-baseline,resolve_build_order_10,9us,9us,9us,10000
+20260421T100311Z,parity-baseline,resolve_build_order_100,172us,172us,172us,1000
+20260421T100311Z,parity-baseline,resolve_build_order_300,529us,529us,529us,500
+20260421T100311Z,parity-baseline,create_file_list_26_files,461us,461us,461us,100
+20260421T100311Z,parity-baseline,sha256_1kb,69us,69us,69us,10000
+20260421T100311Z,parity-baseline,sha256_1mb,67.154ms,67.154ms,67.154ms,100

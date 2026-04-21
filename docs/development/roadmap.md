@@ -9,7 +9,15 @@
 - [x] Build order resolution via topological sort (Kahn's algorithm)
 - [x] Security hardening flag generation (CFLAGS/LDFLAGS)
 - [x] `.ark` manifest creation with file list and SHA-256 hashes
-- [x] Symlink-safe directory traversal
+- [x] Symlink-safe directory traversal (Rust scaffold; Cyrius port
+      currently walks without explicit symlink handling — TODO below)
+- [x] Full type parity with the Rust scaffold (`ArkPackage`,
+      `BuildContext`, `BuildLogEntry`, `TakumiBuildSystem`) — added in
+      the 0.8.0 parity pass
+- [x] Recursive `.cyml` directory scan via `tbs_load_all_recipes`
+- [x] Benchmark parity — 11 of 12 Rust benches ported
+      (`manifest_json_roundtrip` dropped; no serde in Cyrius). See
+      [BENCHMARKS.md](../../BENCHMARKS.md)
 - [x] `#[non_exhaustive]` on all public enums
 - [x] `#[must_use]` on all pure functions
 - [x] Serde roundtrip tests for all types (74 tests)
@@ -25,9 +33,15 @@
 - [ ] Fake-root installation directory management
 - [ ] `.ark` package archive creation (actual file format)
 - [ ] Package signing infrastructure
-- [ ] `main.rs` binary entry point with CLI
+- [ ] `main.cyr` CLI entry point (replaces Rust's `main.rs`)
 - [ ] Integration tests with real recipe files
-- [ ] CI pipeline (GitHub Actions)
+- [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, to
+      be validated end-to-end once the CLI lands
+- [ ] Symlink classification in `create_file_list` — `lstat` +
+      `readlink` + explicit `ARK_FT_SYMLINK` emission. `is_dir` from
+      `lib/fs.cyr` follows links today, so a symlinked directory is
+      walked at its target (cycle-risk exists but is rare for real
+      fake-roots)
 
 ## Future (0.2+)
 

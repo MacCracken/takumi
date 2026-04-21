@@ -8,6 +8,7 @@ include "src/recipe.cyr"
 include "src/parse.cyr"
 include "src/ark.cyr"
 include "src/package.cyr"
+include "src/engine.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -1035,7 +1036,7 @@ fn main() {
     man_set_arch(man, "x86_64");
     man_set_size_installed(man, 5242880);
     man_set_build_date(man, 1713859200);
-    man_set_builder(man, "takumi/0.1.0");
+    man_set_builder(man, "takumi/0.8.0");
     man_set_source_url(man, "https://www.openssl.org/source/openssl-3.5.2.tar.gz");
     man_set_source_hash(man, "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0");
     man_set_license(man, "Apache-2.0");
@@ -1048,7 +1049,7 @@ fn main() {
     assert(streq(man_arch(man), "x86_64"), "arch");
     assert_eq(man_size_installed(man), 5242880, "size_installed");
     assert_eq(man_build_date(man), 1713859200, "build_date");
-    assert(streq(man_builder(man), "takumi/0.1.0"), "builder");
+    assert(streq(man_builder(man), "takumi/0.8.0"), "builder");
     assert(streq(man_source_url(man), "https://www.openssl.org/source/openssl-3.5.2.tar.gz"), "source_url");
     assert(streq(man_source_hash(man), "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"), "source_hash");
     assert(streq(man_license(man), "Apache-2.0"), "license");
@@ -1229,6 +1230,205 @@ fn main() {
     test_group("create_file_list: nonexistent root -> empty");
     var no_listing = create_file_list("/tmp/takumi-does-not-exist-b6b");
     assert_eq(vec_len(no_listing), 0, "missing root -> 0 entries");
+
+    test_group("create_ark_manifest: required fields propagate from recipe");
+    var cam_groups = vec_new();
+    vec_push(cam_groups, "base");
+    vec_push(cam_groups, "crypto");
+    var cam_rt = vec_new();
+    vec_push(cam_rt, "glibc");
+    vec_push(cam_rt, "zlib");
+    var cam_pkg = pkg_new("openssl", "3.5.2", "TLS/SSL library", "Apache-2.0",
+                          cam_groups, 3, "x86_64");
+    var cam_src = src_new("https://www.openssl.org/source/openssl-3.5.2.tar.gz",
+                          "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
+                          vec_new());
+    var cam_dep = dep_new(cam_rt, vec_new());
+    var cam_bld = bld_new(0, "make", 0, "make install", 0, 0);
+    var cam_sec = sec_new(vec_new(), 0, 0);
+    var cam_recipe = recipe_new(cam_pkg, cam_src, cam_dep, cam_bld, cam_sec);
+    var cam_entries = vec_new();
+    vec_push(cam_entries, afe_directory("/usr"));
+    vec_push(cam_entries, afe_regular("/usr/lib/libssl.so", "a", 2000000));
+    vec_push(cam_entries, afe_regular("/usr/lib/libcrypto.so", "b", 3242880));
+    var cam_m = create_ark_manifest(cam_recipe, cam_entries, "x86_64", 1713859200);
+    assert(streq(man_name(cam_m), "openssl"), "name");
+    assert(streq(man_version(cam_m), "3.5.2"), "version");
+    assert_eq(man_release(cam_m), 3, "release");
+    assert(streq(man_description(cam_m), "TLS/SSL library"), "description");
+    assert(streq(man_license(cam_m), "Apache-2.0"), "license");
+    assert(streq(man_source_url(cam_m), "https://www.openssl.org/source/openssl-3.5.2.tar.gz"), "source_url");
+    assert(streq(man_source_hash(cam_m), "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"), "source_hash");
+    assert_eq(vec_len(man_groups(cam_m)), 2, "groups length");
+    assert(streq(vec_get(man_groups(cam_m), 0), "base"), "groups[0]");
+    assert_eq(vec_len(man_depends(cam_m)), 2, "depends length");
+    assert(streq(vec_get(man_depends(cam_m), 0), "glibc"), "depends[0] from recipe.runtime");
+    assert(streq(vec_get(man_depends(cam_m), 1), "zlib"), "depends[1] from recipe.runtime");
+
+    test_group("create_ark_manifest: size_installed sums file sizes");
+    assert_eq(man_size_installed(cam_m), 5242880, "2000000 + 3242880 = 5242880");
+
+    test_group("create_ark_manifest: build_date + builder stamp");
+    assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
+    assert(streq(man_builder(cam_m), "takumi/0.8.0"), "builder stamp is takumi/0.8.0");
+
+    test_group("create_ark_manifest: arch from recipe when set");
+    assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
+
+    test_group("create_ark_manifest: arch fallback when recipe arch is 0");
+    var noa_pkg = pkg_new("noarch", "1.0", "desc", "MIT", vec_new(), 1, 0);
+    var noa_recipe = recipe_new(noa_pkg, cam_src, cam_dep, cam_bld, cam_sec);
+    var noa_m = create_ark_manifest(noa_recipe, vec_new(), "aarch64", 0);
+    assert(streq(man_arch(noa_m), "aarch64"), "arch fallback used");
+
+    test_group("create_ark_manifest: depends uses runtime only, not build deps");
+    var rtbuild = dep_new(vec_new(), vec_new());
+    var only_build_rt = vec_new();
+    vec_push(only_build_rt, "perl");
+    vec_push(only_build_rt, "make");
+    # runtime empty, build has perl/make — manifest should have no depends.
+    var rb_dep = dep_new(vec_new(), only_build_rt);
+    var rb_pkg = pkg_new("x", "1", "d", "L", vec_new(), 1, "x86_64");
+    var rb_recipe = recipe_new(rb_pkg, cam_src, rb_dep, cam_bld, cam_sec);
+    var rb_m = create_ark_manifest(rb_recipe, vec_new(), "x86_64", 0);
+    assert_eq(vec_len(man_depends(rb_m)), 0, "build-only deps don't leak into manifest");
+
+    test_group("create_ark_manifest: empty entry list -> size 0");
+    var empty_m = create_ark_manifest(cam_recipe, vec_new(), "x86_64", 0);
+    assert_eq(man_size_installed(empty_m), 0, "no entries -> 0 bytes");
+
+    test_group("create_ark_manifest: directory-only list -> size 0");
+    var dir_entries = vec_new();
+    vec_push(dir_entries, afe_directory("/usr"));
+    vec_push(dir_entries, afe_directory("/usr/bin"));
+    var dir_m = create_ark_manifest(cam_recipe, dir_entries, "x86_64", 0);
+    assert_eq(man_size_installed(dir_m), 0, "directories only -> 0 bytes");
+
+    test_group("ArkPackage: roundtrip");
+    var apk_files_vec = vec_new();
+    vec_push(apk_files_vec, afe_regular("/usr/bin/hello", "abc", 42));
+    var apk_man = man_alloc();
+    man_set_name(apk_man, "hello");
+    var apk = apk_new(apk_man, "sigsigsig", apk_files_vec, "deadbeef");
+    assert_eq(apk_manifest(apk), apk_man, "manifest pointer matches");
+    assert(streq(apk_signature(apk), "sigsigsig"), "signature stored");
+    assert_eq(vec_len(apk_files(apk)), 1, "one file entry");
+    assert(streq(apk_data_hash(apk), "deadbeef"), "data_hash stored");
+
+    test_group("ArkPackage: unsigned (signature = 0)");
+    var apk_u = apk_new(apk_man, 0, vec_new(), "beefdead");
+    assert_eq(apk_signature(apk_u), 0, "unsigned -> 0");
+    assert(streq(apk_data_hash(apk_u), "beefdead"), "data_hash still set");
+
+    test_group("BuildContext: roundtrip");
+    var bcx_recipe = _valid_recipe();
+    var bcx = bcx_new(bcx_recipe, "/src/hello-1.0", "/build/hello-1.0",
+                      "/pkg/hello-1.0", "/out", "x86_64");
+    assert_eq(bcx_recipe(bcx), bcx_recipe, "recipe pointer");
+    assert(streq(bcx_source_dir(bcx), "/src/hello-1.0"), "source_dir");
+    assert(streq(bcx_build_dir(bcx), "/build/hello-1.0"), "build_dir");
+    assert(streq(bcx_package_dir(bcx), "/pkg/hello-1.0"), "package_dir");
+    assert(streq(bcx_output_dir(bcx), "/out"), "output_dir");
+    assert(streq(bcx_arch(bcx), "x86_64"), "arch");
+
+    test_group("BuildLogEntry: roundtrip with None fields");
+    # Live build: started, status = BUILDING, no completed_at yet.
+    var ble_live = ble_new("openssl", BS_BUILDING, 1713859200, 0, 0, 0);
+    assert(streq(ble_package(ble_live), "openssl"), "package");
+    assert_eq(ble_status(ble_live), BS_BUILDING, "status");
+    assert_eq(ble_started_at(ble_live), 1713859200, "started_at");
+    assert_eq(ble_completed_at(ble_live), 0, "completed_at None");
+    assert_eq(ble_duration_secs(ble_live), 0, "duration_secs None");
+    assert_eq(ble_fail_msg(ble_live), 0, "fail_msg None");
+
+    test_group("BuildLogEntry: completed build has duration");
+    var ble_done = ble_new("openssl", BS_COMPLETE, 1713859200, 1713859260, 60, 0);
+    assert_eq(ble_status(ble_done), BS_COMPLETE, "status COMPLETE");
+    assert_eq(ble_completed_at(ble_done), 1713859260, "completed_at");
+    assert_eq(ble_duration_secs(ble_done), 60, "duration 60s");
+
+    test_group("BuildLogEntry: failed build carries fail_msg");
+    var ble_fail = ble_new("openssl", BS_FAILED, 1713859200, 1713859250, 50, "configure: exit 1");
+    assert_eq(ble_status(ble_fail), BS_FAILED, "status FAILED");
+    assert(streq(ble_fail_msg(ble_fail), "configure: exit 1"), "fail_msg set");
+
+    test_group("TakumiBuildSystem: new is empty");
+    var tbs = tbs_new("/tmp/recipes", "/tmp/build", "/tmp/output");
+    assert(streq(tbs_recipes_dir(tbs), "/tmp/recipes"), "recipes_dir");
+    assert(streq(tbs_build_root(tbs), "/tmp/build"), "build_root");
+    assert(streq(tbs_output_dir(tbs), "/tmp/output"), "output_dir");
+    assert_eq(tbs_recipe_count(tbs), 0, "empty recipe map");
+    assert_eq(vec_len(tbs_build_log(tbs)), 0, "empty log");
+
+    test_group("TakumiBuildSystem: insert + get recipe");
+    var tbs_recipe = _valid_recipe();
+    tbs_insert_recipe(tbs, "hello", tbs_recipe);
+    assert_eq(tbs_recipe_count(tbs), 1, "one recipe");
+    assert_eq(tbs_get_recipe(tbs, "hello"), tbs_recipe, "round-trips");
+    assert_eq(tbs_get_recipe(tbs, "missing"), 0, "missing -> 0");
+
+    test_group("TakumiBuildSystem: log_push + accessors");
+    var first_log = ble_new("a", BS_PENDING, 100, 0, 0, 0);
+    tbs_log_push(tbs, first_log);
+    assert_eq(vec_len(tbs_build_log(tbs)), 1, "one log entry");
+    assert_eq(vec_get(tbs_build_log(tbs), 0), first_log, "entry preserved");
+
+    test_group("tbs_load_all_recipes: walks a directory of .cyml");
+    # Build a recipes root with two recipes and one junk file.
+    var tbs_dir = "/tmp/takumi-engine-test";
+    sys_unlink("/tmp/takumi-engine-test/hello.cyml");
+    sys_unlink("/tmp/takumi-engine-test/world.cyml");
+    sys_unlink("/tmp/takumi-engine-test/notes.txt");
+    sys_rmdir(tbs_dir);
+    assert_eq(sys_mkdir(tbs_dir, 0x1FF), 0, "mkdir recipes root");
+
+    var hello_sb = str_builder_new();
+    str_builder_add_cstr(hello_sb, "[package]\n");
+    str_builder_add_cstr(hello_sb, "name = \"hello\"\n");
+    str_builder_add_cstr(hello_sb, "version = \"1.0.0\"\n");
+    str_builder_add_cstr(hello_sb, "description = \"greeting\"\n");
+    str_builder_add_cstr(hello_sb, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(hello_sb, "[source]\n");
+    str_builder_add_cstr(hello_sb, "url = \"https://example.com/hello.tar.gz\"\n");
+    str_builder_add_cstr(hello_sb, "sha256 = \"deadbeef\"\n");
+    var hello_cyml = str_cstr(str_builder_build(hello_sb));
+    assert(file_write_all("/tmp/takumi-engine-test/hello.cyml",
+                          hello_cyml, strlen(hello_cyml)) > 0, "write hello.cyml");
+
+    var world_sb = str_builder_new();
+    str_builder_add_cstr(world_sb, "[package]\n");
+    str_builder_add_cstr(world_sb, "name = \"world\"\n");
+    str_builder_add_cstr(world_sb, "version = \"2.1\"\n");
+    str_builder_add_cstr(world_sb, "description = \"globe\"\n");
+    str_builder_add_cstr(world_sb, "license = \"GPL-3.0-only\"\n\n");
+    str_builder_add_cstr(world_sb, "[source]\n");
+    str_builder_add_cstr(world_sb, "url = \"https://example.com/world.tar.gz\"\n");
+    str_builder_add_cstr(world_sb, "sha256 = \"feedface\"\n");
+    var world_cyml = str_cstr(str_builder_build(world_sb));
+    assert(file_write_all("/tmp/takumi-engine-test/world.cyml",
+                          world_cyml, strlen(world_cyml)) > 0, "write world.cyml");
+
+    # Junk file with non-.cyml extension should be ignored.
+    var junk = "not a recipe";
+    assert(file_write_all("/tmp/takumi-engine-test/notes.txt",
+                          junk, strlen(junk)) > 0, "write notes.txt");
+
+    var scan_sys = tbs_new(tbs_dir, "/tmp/build", "/tmp/output");
+    var loaded = tbs_load_all_recipes(scan_sys);
+    assert_eq(loaded, 2, "two .cyml files loaded, notes.txt ignored");
+    assert_eq(tbs_recipe_count(scan_sys), 2, "recipe map has 2 entries");
+    var hr = tbs_get_recipe(scan_sys, "hello");
+    assert(hr != 0, "hello present");
+    assert(streq(pkg_version(recipe_package(hr)), "1.0.0"), "hello version");
+    var wr = tbs_get_recipe(scan_sys, "world");
+    assert(wr != 0, "world present");
+    assert(streq(pkg_license(recipe_package(wr)), "GPL-3.0-only"), "world license");
+
+    # Cleanup
+    sys_unlink("/tmp/takumi-engine-test/hello.cyml");
+    sys_unlink("/tmp/takumi-engine-test/world.cyml");
+    sys_unlink("/tmp/takumi-engine-test/notes.txt");
+    sys_rmdir(tbs_dir);
 
     return assert_summary();
 }

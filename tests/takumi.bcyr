@@ -1,12 +1,422 @@
-# takumi benchmarks
+# takumi benchmarks — parity with rust-old/benches/takumi_bench.rs.
+#
+# 11 of the 12 Rust benchmarks are mirrored here. `manifest_json_roundtrip`
+# is deliberately dropped — the port has no serde; the manifest-construction
+# equivalent is the setter-populate pass, which is O(13 stores) and already
+# covered by `validate_recipe` timing characteristics.
+#
+# Methodology: each op runs inside `bench_batch_start` / `bench_batch_stop`
+# so the ~120ns clock_gettime overhead amortizes across the batch,
+# matching Criterion's black-box inner-loop timing. Batch sizes are
+# tuned so each bench takes ~10–100ms total.
 
-fn bench_noop() { return 0; }
+include "lib/bench.cyr"
 
-fn main() {
-    alloc_init();
-    bench("noop", &bench_noop, 1000000);
+include "src/types.cyr"
+include "src/validate.cyr"
+include "src/topo.cyr"
+include "src/flags.cyr"
+include "src/recipe.cyr"
+include "src/parse.cyr"
+include "src/ark.cyr"
+include "src/package.cyr"
+include "src/engine.cyr"
+
+# ---------------------------------------------------------------------------
+# Parse fixtures.
+# ---------------------------------------------------------------------------
+
+fn _minimal_cyml() {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "[package]\n");
+    str_builder_add_cstr(sb, "name = \"hello\"\n");
+    str_builder_add_cstr(sb, "version = \"1.0.0\"\n");
+    str_builder_add_cstr(sb, "description = \"Hello world\"\n");
+    str_builder_add_cstr(sb, "license = \"MIT\"\n\n");
+    str_builder_add_cstr(sb, "[source]\n");
+    str_builder_add_cstr(sb, "url = \"https://example.com/hello-1.0.0.tar.gz\"\n");
+    str_builder_add_cstr(sb, "sha256 = \"abc123def456\"\n\n");
+    str_builder_add_cstr(sb, "[depends]\n\n");
+    str_builder_add_cstr(sb, "[build]\n");
+    str_builder_add_cstr(sb, "make = \"make\"\n");
+    return str_cstr(str_builder_build(sb));
+}
+
+fn _full_cyml() {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "[package]\n");
+    str_builder_add_cstr(sb, "name = \"openssl\"\n");
+    str_builder_add_cstr(sb, "version = \"3.5.2\"\n");
+    str_builder_add_cstr(sb, "description = \"TLS/SSL cryptographic library\"\n");
+    str_builder_add_cstr(sb, "license = \"Apache-2.0\"\n");
+    str_builder_add_cstr(sb, "groups = [\"base\", \"crypto\"]\n");
+    str_builder_add_cstr(sb, "release = 3\n");
+    str_builder_add_cstr(sb, "arch = \"x86_64\"\n\n");
+    str_builder_add_cstr(sb, "[source]\n");
+    str_builder_add_cstr(sb, "url = \"https://www.openssl.org/source/openssl-3.5.2.tar.gz\"\n");
+    str_builder_add_cstr(sb, "sha256 = \"e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0\"\n");
+    str_builder_add_cstr(sb, "patches = [\"fix-musl.patch\", \"agnos-paths.patch\"]\n\n");
+    str_builder_add_cstr(sb, "[depends]\n");
+    str_builder_add_cstr(sb, "runtime = [\"glibc\", \"zlib\"]\n");
+    str_builder_add_cstr(sb, "build = [\"perl\", \"make\"]\n\n");
+    str_builder_add_cstr(sb, "[build]\n");
+    str_builder_add_cstr(sb, "pre_build = \"sed -i 's/foo/bar/' Makefile.in\"\n");
+    str_builder_add_cstr(sb, "configure = \"./config --prefix=/usr --openssldir=/etc/ssl shared\"\n");
+    str_builder_add_cstr(sb, "make = \"make -j4\"\n");
+    str_builder_add_cstr(sb, "check = \"make test\"\n");
+    str_builder_add_cstr(sb, "install = \"make DESTDIR=$PKG install\"\n");
+    str_builder_add_cstr(sb, "post_install = \"rm -rf $PKG/usr/share/doc\"\n\n");
+    str_builder_add_cstr(sb, "[security]\n");
+    str_builder_add_cstr(sb, "hardening = [\"pie\", \"relro\", \"fortify\", \"stackprotector\"]\n");
+    str_builder_add_cstr(sb, "cflags = \"-O2\"\n");
+    str_builder_add_cstr(sb, "ldflags = \"-Wl,--as-needed\"\n");
+    return str_cstr(str_builder_build(sb));
+}
+
+# ---------------------------------------------------------------------------
+# Non-parse fixtures.
+# ---------------------------------------------------------------------------
+
+fn _bench_recipe() {
+    var groups = vec_new(); vec_push(groups, "base");
+    var rt = vec_new(); vec_push(rt, "glibc");
+    var bd = vec_new(); vec_push(bd, "gcc");
+    var hardening = vec_new();
+    vec_push(hardening, HF_PIE);
+    vec_push(hardening, HF_RELRO);
+    vec_push(hardening, HF_FORTIFY);
+    vec_push(hardening, HF_STACK_PROTECTOR);
+    var pkg = pkg_new("bench-pkg", "1.0.0", "Benchmark package", "MIT",
+                      groups, 1, "x86_64");
+    var src = src_new("https://example.com/bench-1.0.0.tar.gz",
+                      "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
+                      vec_new());
+    var dep = dep_new(rt, bd);
+    var bld = bld_new("./configure", "make", 0, "make install", 0, 0);
+    var sec = sec_new(hardening, 0, 0);
+    return recipe_new(pkg, src, dep, bld, sec);
+}
+
+fn _cflags_fixture() {
+    var h = vec_new();
+    vec_push(h, HF_PIE);
+    vec_push(h, HF_FORTIFY);
+    vec_push(h, HF_STACK_PROTECTOR);
+    return h;
+}
+
+fn _ldflags_dedup_fixture() {
+    var h = vec_new();
+    vec_push(h, HF_PIE);
+    vec_push(h, HF_FULL_RELRO);
+    vec_push(h, HF_RELRO);
+    vec_push(h, HF_BIND_NOW);
+    return h;
+}
+
+# Kahn chain fixture: single-chain graph of N packages where pkg-k
+# depends on pkg-(k-1). Mirrors Rust's build_system_with_chain.
+# Returns a 2-word struct { packages_vec, adj_map }.
+fn _chain_make(n) {
+    var packages = vec_new();
+    var adj = map_new();
+    var names_by_idx = vec_new();
+    var i = 0;
+    while (i < n) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "pkg-");
+        str_builder_add_int(sb, i);
+        var name = str_cstr(str_builder_build(sb));
+        vec_push(packages, name);
+        vec_push(names_by_idx, name);
+        i = i + 1;
+    }
+    var j = 1;
+    while (j < n) {
+        var deps = vec_new();
+        vec_push(deps, vec_get(names_by_idx, j - 1));
+        map_set(adj, vec_get(names_by_idx, j), deps);
+        j = j + 1;
+    }
+    var pair = alloc(16);
+    store64(pair, packages);
+    store64(pair + 8, adj);
+    return pair;
+}
+
+# File-list fixture mirroring Rust's bench_create_file_list.
+#   usr/bin/tool{0..4}              (5 regular files)
+#   usr/lib/libfoo{0..19}.so        (20 regular files)
+#   etc/conf.d/app.conf             (1 config file)
+#   + directory entries
+# 26 files total, matching the Rust bench name.
+fn _fl_tear_down() {
+    var i = 0;
+    while (i < 20) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "/tmp/takumi-bench-filelist/usr/lib/libfoo");
+        str_builder_add_int(sb, i);
+        str_builder_add_cstr(sb, ".so");
+        sys_unlink(str_cstr(str_builder_build(sb)));
+        i = i + 1;
+    }
+    var k = 0;
+    while (k < 5) {
+        var sb2 = str_builder_new();
+        str_builder_add_cstr(sb2, "/tmp/takumi-bench-filelist/usr/bin/tool");
+        str_builder_add_int(sb2, k);
+        sys_unlink(str_cstr(str_builder_build(sb2)));
+        k = k + 1;
+    }
+    sys_unlink("/tmp/takumi-bench-filelist/etc/conf.d/app.conf");
+    sys_rmdir("/tmp/takumi-bench-filelist/etc/conf.d");
+    sys_rmdir("/tmp/takumi-bench-filelist/etc");
+    sys_rmdir("/tmp/takumi-bench-filelist/usr/share/doc");
+    sys_rmdir("/tmp/takumi-bench-filelist/usr/share");
+    sys_rmdir("/tmp/takumi-bench-filelist/usr/lib");
+    sys_rmdir("/tmp/takumi-bench-filelist/usr/bin");
+    sys_rmdir("/tmp/takumi-bench-filelist/usr");
+    sys_rmdir("/tmp/takumi-bench-filelist");
     return 0;
 }
 
-var r = main();
-syscall(60, r);
+fn _fl_build() {
+    _fl_tear_down();
+    sys_mkdir("/tmp/takumi-bench-filelist", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/usr", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/usr/bin", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/usr/lib", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/usr/share", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/usr/share/doc", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/etc", 0x1FF);
+    sys_mkdir("/tmp/takumi-bench-filelist/etc/conf.d", 0x1FF);
+    var i = 0;
+    while (i < 20) {
+        var path_sb = str_builder_new();
+        str_builder_add_cstr(path_sb, "/tmp/takumi-bench-filelist/usr/lib/libfoo");
+        str_builder_add_int(path_sb, i);
+        str_builder_add_cstr(path_sb, ".so");
+        var p = str_cstr(str_builder_build(path_sb));
+        var content_sb = str_builder_new();
+        str_builder_add_cstr(content_sb, "lib content ");
+        str_builder_add_int(content_sb, i);
+        var content = str_cstr(str_builder_build(content_sb));
+        file_write_all(p, content, strlen(content));
+        i = i + 1;
+    }
+    var k = 0;
+    while (k < 5) {
+        var path_sb2 = str_builder_new();
+        str_builder_add_cstr(path_sb2, "/tmp/takumi-bench-filelist/usr/bin/tool");
+        str_builder_add_int(path_sb2, k);
+        var p2 = str_cstr(str_builder_build(path_sb2));
+        var content_sb2 = str_builder_new();
+        str_builder_add_cstr(content_sb2, "binary content ");
+        str_builder_add_int(content_sb2, k);
+        var content2 = str_cstr(str_builder_build(content_sb2));
+        file_write_all(p2, content2, strlen(content2));
+        k = k + 1;
+    }
+    var conf = "key=value";
+    file_write_all("/tmp/takumi-bench-filelist/etc/conf.d/app.conf", conf, strlen(conf));
+    return 0;
+}
+
+fn _sha_buf(n) {
+    var buf = alloc(n);
+    var i = 0;
+    while (i < n) {
+        store8(buf + i, 0xAB);
+        i = i + 1;
+    }
+    return buf;
+}
+
+# ---------------------------------------------------------------------------
+# Benchmarks. Each: fixture → bench_new → batch_start → tight loop →
+# batch_stop → bench_report.
+# ---------------------------------------------------------------------------
+
+fn bench_parse_minimal() {
+    var cyml = _minimal_cyml();
+    var len = strlen(cyml);
+    var b = bench_new("parse_minimal_recipe");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 1000) {
+        recipe_parse_str(cyml, len);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_parse_full() {
+    var cyml = _full_cyml();
+    var len = strlen(cyml);
+    var b = bench_new("parse_full_recipe");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 1000) {
+        recipe_parse_str(cyml, len);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_validate() {
+    var recipe = _bench_recipe();
+    var b = bench_new("validate_recipe");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 10000) {
+        validate_recipe(recipe);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 10000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_cflags() {
+    var flags = _cflags_fixture();
+    var b = bench_new("generate_cflags");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100000) {
+        generate_cflags(flags, "-O2 -march=x86-64");
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_ldflags_dedup() {
+    var flags = _ldflags_dedup_fixture();
+    var b = bench_new("generate_ldflags_with_dedup");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100000) {
+        generate_ldflags(flags, "-Wl,--as-needed");
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_topo_10() {
+    var pair = _chain_make(10);
+    var packages = load64(pair);
+    var adj = load64(pair + 8);
+    var b = bench_new("resolve_build_order_10");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 10000) {
+        resolve_build_order(packages, adj);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 10000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_topo_100() {
+    var pair = _chain_make(100);
+    var packages = load64(pair);
+    var adj = load64(pair + 8);
+    var b = bench_new("resolve_build_order_100");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 1000) {
+        resolve_build_order(packages, adj);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_topo_300() {
+    var pair = _chain_make(300);
+    var packages = load64(pair);
+    var adj = load64(pair + 8);
+    var b = bench_new("resolve_build_order_300");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 500) {
+        resolve_build_order(packages, adj);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 500);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_create_file_list() {
+    _fl_build();
+    var b = bench_new("create_file_list_26_files");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100) {
+        create_file_list("/tmp/takumi-bench-filelist");
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100);
+    bench_report(b);
+    _fl_tear_down();
+    return 0;
+}
+
+fn bench_sha256_1kb() {
+    var data = _sha_buf(1024);
+    sha256_global_init();
+    var b = bench_new("sha256_1kb");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 10000) {
+        sha256_hex(data, 1024);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 10000);
+    bench_report(b);
+    return 0;
+}
+
+fn bench_sha256_1mb() {
+    var data = _sha_buf(1048576);
+    sha256_global_init();
+    var b = bench_new("sha256_1mb");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100) {
+        sha256_hex(data, 1048576);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100);
+    bench_report(b);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    bench_parse_minimal();
+    bench_parse_full();
+    bench_validate();
+    bench_cflags();
+    bench_ldflags_dedup();
+    bench_topo_10();
+    bench_topo_100();
+    bench_topo_300();
+    bench_create_file_list();
+    bench_sha256_1kb();
+    bench_sha256_1mb();
+    return 0;
+}
+
+var rc = main();
+syscall(60, rc);

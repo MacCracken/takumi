@@ -11,7 +11,7 @@
 #
 # Strings are cstrings throughout; vec fields are vec-of-cstring
 # pointers; timestamps are Unix epoch seconds (i64). The builder
-# string is a short identifier like "takumi/0.1.0".
+# string is a short identifier like "takumi/0.8.0".
 
 # ---------------------------------------------------------------------------
 # ArkManifest — metadata block embedded in every .ark package.
@@ -126,3 +126,40 @@ fn afe_sha256(e) { return load64(e + AFE_SHA256); }
 fn afe_size(e) { return load64(e + AFE_SIZE); }
 fn afe_file_type(e) { return load64(e + AFE_FILE_TYPE); }
 fn afe_symlink_target(e) { return load64(e + AFE_SYMLINK_TARGET); }
+
+# ---------------------------------------------------------------------------
+# ArkPackage — the outer container that wraps a manifest, a file list,
+# an optional Ed25519 signature, and the SHA-256 of the packed data
+# stream. This is what a `.ark` archive will serialize to once the
+# on-disk format lands (0.9.x roadmap).
+#
+# Fields (matching rust-old/src/lib.rs):
+#   manifest   — pointer to an ArkManifest
+#   signature  — cstring hex Ed25519 signature or 0 (None). Stored hex
+#                (not raw bytes) so it round-trips cleanly through
+#                cstring-centric APIs; 128 hex chars for an Ed25519 sig.
+#   files      — vec of ArkFileEntry pointers
+#   data_hash  — cstring hex SHA-256 of the packed data stream
+# ---------------------------------------------------------------------------
+
+enum ApkOff {
+    APK_MANIFEST = 0;
+    APK_SIGNATURE = 8;
+    APK_FILES = 16;
+    APK_DATA_HASH = 24;
+    APK_SIZE = 32;
+}
+
+fn apk_new(manifest, signature, files, data_hash) {
+    var p = alloc(APK_SIZE);
+    store64(p + APK_MANIFEST, manifest);
+    store64(p + APK_SIGNATURE, signature);
+    store64(p + APK_FILES, files);
+    store64(p + APK_DATA_HASH, data_hash);
+    return p;
+}
+
+fn apk_manifest(p) { return load64(p + APK_MANIFEST); }
+fn apk_signature(p) { return load64(p + APK_SIGNATURE); }
+fn apk_files(p) { return load64(p + APK_FILES); }
+fn apk_data_hash(p) { return load64(p + APK_DATA_HASH); }

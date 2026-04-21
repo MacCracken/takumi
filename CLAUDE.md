@@ -9,7 +9,7 @@
   under `rust-old/` during the port and is authoritative until feature
   parity is reached.
 - **License**: GPL-3.0-only
-- **Version**: SemVer 0.1.0 (source of truth: `VERSION` → mirrored in `cyrius.cyml`)
+- **Version**: SemVer 0.8.0 (source of truth: `VERSION` → mirrored in `cyrius.cyml` and in the builder stamp in `src/package.cyr`; bumped from 0.1.0 on the Cyrius port to synchronize with ark 0.8.0)
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Philosophy**: [AGNOS Philosophy & Intention](https://github.com/MacCracken/agnosticos/blob/main/docs/philosophy.md)
 - **First-party standards**: [First-Party Application Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)

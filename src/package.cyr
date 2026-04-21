@@ -163,3 +163,49 @@ fn sum_installed_size(entries) {
     }
     return total;
 }
+
+# ---------------------------------------------------------------------------
+# create_ark_manifest — compose a BuildRecipe + a walked install tree
+# into an ArkManifest.
+#
+# Ported from rust-old/src/lib.rs:TakumiBuildSystem::create_ark_manifest.
+# The Rust impl took (recipe, package_dir) and walked the tree itself
+# via compute_dir_size. Our port takes the precomputed entry list —
+# callers already need to walk once for the file manifest; passing
+# the list avoids a second disk walk.
+#
+# `default_arch_cstr` is the fallback when `recipe.package.arch` is
+# None (Rust used `std::env::consts::ARCH`; Cyrius has no equivalent
+# intrinsic, so the caller provides — typically "x86_64" today).
+# `build_date_secs` is Unix epoch seconds (i64). Exposing it as a
+# parameter keeps tests deterministic; the real build pipeline
+# passes `clock_epoch_secs()` from lib/chrono.cyr.
+#
+# The builder string is hardcoded "takumi/0.8.0" — it's takumi's own
+# identity stamp in every manifest, not a tunable.
+# ---------------------------------------------------------------------------
+
+fn create_ark_manifest(recipe, entries, default_arch_cstr, build_date_secs) {
+    var pkg = recipe_package(recipe);
+    var src = recipe_source(recipe);
+    var dep = recipe_depends(recipe);
+
+    var arch = pkg_arch(pkg);
+    if (arch == 0) { arch = default_arch_cstr; }
+
+    var m = man_alloc();
+    man_set_name(m, pkg_name(pkg));
+    man_set_version(m, pkg_version(pkg));
+    man_set_release(m, pkg_release(pkg));
+    man_set_description(m, pkg_description(pkg));
+    man_set_arch(m, arch);
+    man_set_size_installed(m, sum_installed_size(entries));
+    man_set_build_date(m, build_date_secs);
+    man_set_builder(m, "takumi/0.8.0");
+    man_set_source_url(m, src_url(src));
+    man_set_source_hash(m, src_sha256(src));
+    man_set_license(m, pkg_license(pkg));
+    man_set_groups(m, pkg_groups(pkg));
+    man_set_depends(m, dep_runtime(dep));
+    return m;
+}
