@@ -6,6 +6,7 @@ include "src/topo.cyr"
 include "src/flags.cyr"
 include "src/recipe.cyr"
 include "src/parse.cyr"
+include "src/ark.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -1017,6 +1018,101 @@ fn main() {
     var v_clean2 = val_new(vec_new(), vec_new());
     assert_eq(val_ok(v_clean2), 1, "empty errors -> ok");
     assert_eq(vec_len(val_warnings(v_clean2)), 0, "warnings accessible");
+
+    test_group("ArkManifest: full roundtrip via chained setters");
+    var man_groups = vec_new();
+    vec_push(man_groups, "base");
+    vec_push(man_groups, "crypto");
+    var man_deps = vec_new();
+    vec_push(man_deps, "glibc");
+    vec_push(man_deps, "zlib");
+    var man = man_alloc();
+    man_set_name(man, "openssl");
+    man_set_version(man, "3.5.2");
+    man_set_release(man, 3);
+    man_set_description(man, "TLS/SSL library");
+    man_set_arch(man, "x86_64");
+    man_set_size_installed(man, 5242880);
+    man_set_build_date(man, 1713859200);
+    man_set_builder(man, "takumi/0.1.0");
+    man_set_source_url(man, "https://www.openssl.org/source/openssl-3.5.2.tar.gz");
+    man_set_source_hash(man, "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0");
+    man_set_license(man, "Apache-2.0");
+    man_set_groups(man, man_groups);
+    man_set_depends(man, man_deps);
+    assert(streq(man_name(man), "openssl"), "name");
+    assert(streq(man_version(man), "3.5.2"), "version");
+    assert_eq(man_release(man), 3, "release");
+    assert(streq(man_description(man), "TLS/SSL library"), "description");
+    assert(streq(man_arch(man), "x86_64"), "arch");
+    assert_eq(man_size_installed(man), 5242880, "size_installed");
+    assert_eq(man_build_date(man), 1713859200, "build_date");
+    assert(streq(man_builder(man), "takumi/0.1.0"), "builder");
+    assert(streq(man_source_url(man), "https://www.openssl.org/source/openssl-3.5.2.tar.gz"), "source_url");
+    assert(streq(man_source_hash(man), "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"), "source_hash");
+    assert(streq(man_license(man), "Apache-2.0"), "license");
+    assert_eq(vec_len(man_groups(man)), 2, "groups length");
+    assert(streq(vec_get(man_groups(man), 0), "base"), "groups[0]");
+    assert_eq(vec_len(man_depends(man)), 2, "depends length");
+    assert(streq(vec_get(man_depends(man), 1), "zlib"), "depends[1]");
+
+    test_group("ArkManifest: zero-init has zero/empty fields");
+    var man_z = man_alloc();
+    assert_eq(man_name(man_z), 0, "name starts at 0 (None)");
+    assert_eq(man_release(man_z), 0, "release starts at 0");
+    assert_eq(man_size_installed(man_z), 0, "size_installed starts at 0");
+    assert_eq(man_groups(man_z), 0, "groups starts at 0 — caller must set to vec_new()");
+    # A minimal usable manifest just sets the required identity fields.
+    var man_min = man_alloc();
+    man_set_name(man_min, "tiny");
+    man_set_version(man_min, "0.1.0");
+    man_set_release(man_min, 1);
+    man_set_groups(man_min, vec_new());
+    man_set_depends(man_min, vec_new());
+    assert(streq(man_name(man_min), "tiny"), "minimal name");
+    assert_eq(man_release(man_min), 1, "minimal release");
+    assert_eq(vec_len(man_groups(man_min)), 0, "minimal groups empty");
+
+    test_group("ArkManifest: setters return the manifest (chainable)");
+    var man_c = man_alloc();
+    assert_eq(man_set_name(man_c, "chain"), man_c, "setter returns same pointer");
+    assert(streq(man_name(man_c), "chain"), "chained value persists");
+
+    test_group("ArkFileEntry: regular file");
+    var regular = afe_regular("/usr/bin/hello",
+        "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+        4096);
+    assert(streq(afe_path(regular), "/usr/bin/hello"), "path");
+    assert_eq(afe_size(regular), 4096, "size");
+    assert_eq(afe_file_type(regular), ARK_FT_REGULAR, "type");
+    assert_eq(afe_symlink_target(regular), 0, "no symlink target");
+
+    test_group("ArkFileEntry: directory");
+    var d = afe_directory("/usr/bin");
+    assert(streq(afe_path(d), "/usr/bin"), "path");
+    assert(streq(afe_sha256(d), ""), "empty sha");
+    assert_eq(afe_size(d), 0, "zero size");
+    assert_eq(afe_file_type(d), ARK_FT_DIRECTORY, "type");
+    assert_eq(afe_symlink_target(d), 0, "no target");
+
+    test_group("ArkFileEntry: symlink");
+    var sym = afe_symlink("/usr/bin/python", "python3");
+    assert_eq(afe_file_type(sym), ARK_FT_SYMLINK, "type");
+    assert(streq(afe_symlink_target(sym), "python3"), "target");
+    assert_eq(afe_size(sym), 0, "zero size");
+
+    test_group("ArkFileEntry: config file");
+    var cfg = afe_config("/etc/example.conf", "deadbeef", 1024);
+    assert_eq(afe_file_type(cfg), ARK_FT_CONFIG, "type");
+    assert(streq(afe_path(cfg), "/etc/example.conf"), "path");
+    assert_eq(afe_size(cfg), 1024, "size");
+
+    test_group("ArkFileEntry: direct constructor preserves all fields");
+    var direct = afe_new("/var/lib/x", "abc", 512, ARK_FT_REGULAR, 0);
+    assert(streq(afe_path(direct), "/var/lib/x"), "path");
+    assert(streq(afe_sha256(direct), "abc"), "sha");
+    assert_eq(afe_size(direct), 512, "size");
+    assert_eq(afe_file_type(direct), ARK_FT_REGULAR, "type");
 
     return assert_summary();
 }

@@ -7,6 +7,7 @@ include "src/topo.cyr"
 include "src/flags.cyr"
 include "src/recipe.cyr"
 include "src/parse.cyr"
+include "src/ark.cyr"
 
 fn main() {
     alloc_init();

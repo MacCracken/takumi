@@ -1,0 +1,128 @@
+# takumi — in-memory model for .ark package output.
+#
+# Ported from rust-old/src/lib.rs: ArkManifest and ArkFileEntry.
+# This file owns the *layout* only — the file walker and manifest
+# builder in src/package.cyr populate these structs.
+#
+# The Rust `ArkFileType::Symlink(String)` variant carried its target
+# inline; our port made `ArkFileType` tag-only (bite #1), so
+# `ArkFileEntry` grows a `symlink_target` field alongside the tag.
+# The field is `0` (None) when `file_type != ARK_FT_SYMLINK`.
+#
+# Strings are cstrings throughout; vec fields are vec-of-cstring
+# pointers; timestamps are Unix epoch seconds (i64). The builder
+# string is a short identifier like "takumi/0.1.0".
+
+# ---------------------------------------------------------------------------
+# ArkManifest — metadata block embedded in every .ark package.
+# Matches the Rust struct field for field. `arch` is a required
+# cstring here (Rust fell back to `std::env::consts::ARCH` when
+# the recipe omitted it — that fallback belongs in the builder,
+# not the struct).
+# ---------------------------------------------------------------------------
+
+enum ManOff {
+    MAN_NAME = 0;
+    MAN_VERSION = 8;
+    MAN_RELEASE = 16;
+    MAN_DESCRIPTION = 24;
+    MAN_ARCH = 32;
+    MAN_SIZE_INSTALLED = 40;
+    MAN_BUILD_DATE = 48;
+    MAN_BUILDER = 56;
+    MAN_SOURCE_URL = 64;
+    MAN_SOURCE_HASH = 72;
+    MAN_LICENSE = 80;
+    MAN_GROUPS = 88;
+    MAN_DEPENDS = 96;
+    MAN_SIZE = 104;
+}
+
+# ArkManifest has 13 fields — too many for a single direct constructor
+# call on Cyrius 5.5.23 (the 9-arg ceiling corrupts middle positions;
+# see `feedback_cyrius_arg_limit`). Use the zero-init + chained-setter
+# pattern sigil uses for `trust_policy`.
+#
+# A fresh alloc from the bump allocator is already zeroed, so we rely
+# on that for field defaults: every field starts at `0` (None / empty).
+fn man_alloc() { return alloc(MAN_SIZE); }
+
+fn man_set_name(m, v) { store64(m + MAN_NAME, v); return m; }
+fn man_set_version(m, v) { store64(m + MAN_VERSION, v); return m; }
+fn man_set_release(m, v) { store64(m + MAN_RELEASE, v); return m; }
+fn man_set_description(m, v) { store64(m + MAN_DESCRIPTION, v); return m; }
+fn man_set_arch(m, v) { store64(m + MAN_ARCH, v); return m; }
+fn man_set_size_installed(m, v) { store64(m + MAN_SIZE_INSTALLED, v); return m; }
+fn man_set_build_date(m, v) { store64(m + MAN_BUILD_DATE, v); return m; }
+fn man_set_builder(m, v) { store64(m + MAN_BUILDER, v); return m; }
+fn man_set_source_url(m, v) { store64(m + MAN_SOURCE_URL, v); return m; }
+fn man_set_source_hash(m, v) { store64(m + MAN_SOURCE_HASH, v); return m; }
+fn man_set_license(m, v) { store64(m + MAN_LICENSE, v); return m; }
+fn man_set_groups(m, v) { store64(m + MAN_GROUPS, v); return m; }
+fn man_set_depends(m, v) { store64(m + MAN_DEPENDS, v); return m; }
+
+fn man_name(m) { return load64(m + MAN_NAME); }
+fn man_version(m) { return load64(m + MAN_VERSION); }
+fn man_release(m) { return load64(m + MAN_RELEASE); }
+fn man_description(m) { return load64(m + MAN_DESCRIPTION); }
+fn man_arch(m) { return load64(m + MAN_ARCH); }
+fn man_size_installed(m) { return load64(m + MAN_SIZE_INSTALLED); }
+fn man_build_date(m) { return load64(m + MAN_BUILD_DATE); }
+fn man_builder(m) { return load64(m + MAN_BUILDER); }
+fn man_source_url(m) { return load64(m + MAN_SOURCE_URL); }
+fn man_source_hash(m) { return load64(m + MAN_SOURCE_HASH); }
+fn man_license(m) { return load64(m + MAN_LICENSE); }
+fn man_groups(m) { return load64(m + MAN_GROUPS); }
+fn man_depends(m) { return load64(m + MAN_DEPENDS); }
+
+# ---------------------------------------------------------------------------
+# ArkFileEntry — one file inside a .ark package.
+#
+# `path` is relative to the package root with a leading slash
+# (e.g. "/usr/bin/hello"). `sha256` is hex (64 chars) for regular
+# files; empty string for directories and symlinks. `size` is the
+# regular file's byte length; 0 for dirs/symlinks. `file_type` is
+# one of the ARK_FT_* discriminants from src/types.cyr. For
+# symlinks, `symlink_target` holds the link target as a cstring;
+# for every other type it is 0.
+# ---------------------------------------------------------------------------
+
+enum AfeOff {
+    AFE_PATH = 0;
+    AFE_SHA256 = 8;
+    AFE_SIZE = 16;
+    AFE_FILE_TYPE = 24;
+    AFE_SYMLINK_TARGET = 32;
+    AFE_SIZE_BYTES = 40;
+}
+
+fn afe_new(path, sha256, size, file_type, symlink_target) {
+    var e = alloc(AFE_SIZE_BYTES);
+    store64(e + AFE_PATH, path);
+    store64(e + AFE_SHA256, sha256);
+    store64(e + AFE_SIZE, size);
+    store64(e + AFE_FILE_TYPE, file_type);
+    store64(e + AFE_SYMLINK_TARGET, symlink_target);
+    return e;
+}
+
+# Convenience constructors — match the Rust enum variants more
+# directly so the file walker reads cleanly.
+fn afe_regular(path, sha256, size) {
+    return afe_new(path, sha256, size, ARK_FT_REGULAR, 0);
+}
+fn afe_directory(path) {
+    return afe_new(path, "", 0, ARK_FT_DIRECTORY, 0);
+}
+fn afe_symlink(path, target) {
+    return afe_new(path, "", 0, ARK_FT_SYMLINK, target);
+}
+fn afe_config(path, sha256, size) {
+    return afe_new(path, sha256, size, ARK_FT_CONFIG, 0);
+}
+
+fn afe_path(e) { return load64(e + AFE_PATH); }
+fn afe_sha256(e) { return load64(e + AFE_SHA256); }
+fn afe_size(e) { return load64(e + AFE_SIZE); }
+fn afe_file_type(e) { return load64(e + AFE_FILE_TYPE); }
+fn afe_symlink_target(e) { return load64(e + AFE_SYMLINK_TARGET); }

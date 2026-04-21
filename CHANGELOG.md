@@ -115,6 +115,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning path, build-step silencing rules, multi-issue accumulation,
   `val_ok` accessor semantics). Total suite: **395 assertions, 0
   failures**.
+- `src/ark.cyr` — in-memory model for `.ark` package output:
+  `ArkManifest` (13 fields: name, version, release, description,
+  arch, size_installed, build_date, builder, source_url, source_hash,
+  license, groups, depends) and `ArkFileEntry` (path, sha256, size,
+  file_type, symlink_target). The Rust `ArkFileType::Symlink(String)`
+  variant's inline payload becomes a separate `symlink_target` field
+  adjacent to the tag. Convenience constructors `afe_regular`,
+  `afe_directory`, `afe_symlink`, `afe_config` keep the file walker
+  readable. Build dates are Unix epoch seconds (i64).
+- **`ArkManifest` uses zero-init + chained setters** (`man_alloc()` +
+  `man_set_*`) rather than a single 13-arg constructor. Discovered
+  during this bite that direct `fn` declarations with 10+ positional
+  args corrupt middle positions by roughly `N-9` slots on Cyrius
+  5.5.23 (the `fncallN` indirect-call path is documented to support
+  8; direct declarations are capped at 9). Pattern matches the
+  sigil `trust_policy` API in ark's vendored stdlib. Saved as memory
+  `feedback_cyrius_arg_limit` with a probe-measured table.
+- 43 new ark-model tests (manifest full roundtrip via setters,
+  zero-init defaults, setter-returns-pointer chainability, every
+  file-entry variant). Total suite: **438 assertions, 0 failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 
