@@ -2,7 +2,7 @@
 
 ## Project Identity
 
-**Takumi** (Japanese: 匠 — master craftsman) — Package build system for AGNOS (.ark packages from TOML recipes)
+**Takumi** (Japanese: 匠 — master craftsman) — Package build system for AGNOS (.ark packages from CYML recipes). CYML is TOML-header + markdown-body in one file — structured recipe metadata above `---`, prose build notes / maintainer commentary below.
 
 - **Type**: Binary
 - **Language**: Cyrius (toolchain pinned to 5.5.23). Rust reference remains
@@ -17,7 +17,7 @@
 
 ## Consumers
 
-ark (builds packages from zugot recipes). Takumi reads TOML recipes from the zugot repo and produces .ark packages for installation.
+ark (builds packages from zugot recipes). Takumi reads `.cyml` recipes from the zugot repo (parsed via `lib/cyml.cyr` → `lib/toml.cyr` on the header) and produces .ark packages for installation.
 
 ## Development Process
 
@@ -74,11 +74,11 @@ ark (builds packages from zugot recipes). Takumi reads TOML recipes from the zug
   out-of-bounds `vec_get`/`map_get` on caller-controlled indices
   (validate first, or route through checked wrappers)
 - Every type must have a canonical string form and a roundtrip test
-  (`x_to_cstr` ↔ `x_from_cstr`, TOML in ↔ out)
+  (`x_to_cstr` ↔ `x_from_cstr`, CYML in ↔ out)
 - Builds must be reproducible — same recipe + same sources = identical .ark output
 - SHA-256 integrity on all source downloads and produced artifacts (use
   `lib/sigil.cyr` — `sha256_digest` / `sha256_digest_bytes`)
-- Recipe validation must be strict — reject malformed TOML early with clear errors
+- Recipe validation must be strict — reject malformed CYML early with clear errors (bad TOML header, missing required fields, unsafe package names, non-https source URLs, malformed SHA-256)
 - Always call `alloc_init()` before any `alloc()` path (including tests)
 - Pin toolchain to a released Cyrius tag in `cyrius.cyml`; never a dev version
 

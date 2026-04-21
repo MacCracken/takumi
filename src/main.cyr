@@ -5,6 +5,7 @@ include "src/types.cyr"
 include "src/validate.cyr"
 include "src/topo.cyr"
 include "src/flags.cyr"
+include "src/recipe.cyr"
 
 fn main() {
     alloc_init();

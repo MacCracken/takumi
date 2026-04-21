@@ -2,28 +2,28 @@
 
 **Takumi** (Japanese: 匠 — master craftsman) — Package build system for AGNOS.
 
-The craftsman that reads [zugot](https://github.com/MacCracken/zugot) recipes and produces `.ark` packages. Given a TOML recipe defining source, dependencies, build steps, and security flags, takumi downloads, builds, hardens, and packages the result.
+The craftsman that reads [zugot](https://github.com/MacCracken/zugot) recipes and produces `.ark` packages. Given a CYML recipe defining source, dependencies, build steps, and security flags, takumi downloads, builds, hardens, and packages the result.
 
 ## What Takumi Does
 
 Takumi is the build engine. It reads recipe files, resolves build order, executes build steps with security hardening flags, and outputs signed `.ark` packages ready for installation by [ark](https://github.com/MacCracken/ark).
 
 ```
-zugot recipe (.toml) → takumi → .ark package
+zugot recipe (.cyml) → takumi → .ark package
                          ├── download source (verify SHA256)
                          ├── configure (with hardening flags)
-                         ├── build (make/cargo)
+                         ├── build (make / cargo / cyrius)
                          ├── check (tests)
                          ├── install (to staging dir)
                          ├── generate manifest + file list
                          └── package as .ark
 ```
 
-## Recipe Format
+## Recipe Format — CYML
 
-Recipes are TOML files in the [zugot](https://github.com/MacCracken/zugot) repository:
+Recipes are `.cyml` files in the [zugot](https://github.com/MacCracken/zugot) repository. CYML is [Cyrius's](https://github.com/MacCracken/cyrius) own format: a TOML header above `---`, markdown below. The header carries the structured fields takumi needs; the body is a place for maintainer notes, upgrade guidance, and build quirks — in the same file as the recipe rather than a separate doc.
 
-```toml
+```cyml
 [package]
 name = "hoosh"
 version = "1.2.0"
@@ -34,8 +34,7 @@ release = 1
 arch = "x86_64"
 
 [source]
-github_release = "MacCracken/hoosh"
-release_asset = "hoosh-*-linux-amd64.tar.gz"
+url = "https://github.com/MacCracken/hoosh/archive/refs/tags/1.2.0.tar.gz"
 sha256 = "abc123..."
 
 [depends]
@@ -52,6 +51,18 @@ cp target/release/hoosh $PKG/usr/bin/
 
 [security]
 hardening = ["pie", "fullrelro", "fortify", "stackprotector", "bindnow"]
+
+---
+
+# Hoosh
+
+AI inference gateway. Packaged from upstream releases.
+
+## Build notes
+
+- Requires Rust 1.80+; pulls openssl-dev at build time for the TLS backend.
+- On first upgrade past 1.2.0, clear `/var/lib/hoosh/cache` — the cache
+  format is not backward compatible with pre-1.2 runtimes.
 ```
 
 ## Core Types
@@ -59,7 +70,7 @@ hardening = ["pie", "fullrelro", "fortify", "stackprotector", "bindnow"]
 | Type | Description |
 |------|-------------|
 | `TakumiBuildSystem` | Main engine — loads recipes, resolves build order, executes builds |
-| `BuildRecipe` | Parsed TOML recipe (package metadata, source, deps, build steps, security) |
+| `BuildRecipe` | Parsed CYML recipe header (package metadata, source, deps, build steps, security) |
 | `PackageMetadata` | Name, version, description, license, groups, arch |
 | `SourceSpec` | Source URL, release asset pattern, SHA256 hash |
 | `DependencySpec` | Runtime and build dependencies |
@@ -124,7 +135,7 @@ Takumi resolves build order via dependency-aware topological sort. For the base 
 |-------|---------|
 | anyhow | Error handling |
 | serde / serde_json | Serialization |
-| toml | Recipe parsing |
+| cyml + toml | Recipe parsing (cyml splits header/body; toml parses the header) |
 | sha2 | Integrity verification |
 | tracing | Structured logging |
 | chrono | Timestamps |

@@ -2,8 +2,9 @@
 
 ## System Context
 
-Takumi is the build engine in the AGNOS ecosystem. It reads TOML recipes from
-the [zugot](https://github.com/MacCracken/zugot) repository and produces
+Takumi is the build engine in the AGNOS ecosystem. It reads CYML recipes
+(TOML header + markdown body in one file) from the
+[zugot](https://github.com/MacCracken/zugot) repository and produces
 `.ark` packages for installation by `ark`.
 
 ```
@@ -19,7 +20,7 @@ logical sections:
 
 | Type | Purpose |
 |------|---------|
-| `BuildRecipe` | Complete recipe parsed from a `.toml` file |
+| `BuildRecipe` | Complete recipe parsed from a `.cyml` file (header only; body is prose documentation) |
 | `PackageMetadata` | Package identity: name, version, description, license, groups, release, arch |
 | `SourceSpec` | Source tarball URL, SHA-256 hash, patch list |
 | `DependencySpec` | Runtime and build-time dependency lists |
@@ -48,7 +49,7 @@ logical sections:
 ## Data Flow
 
 ```
-1. Load:     TOML files -> BuildRecipe structs
+1. Load:     .cyml files -> CymlDoc (cyml_parse) -> TOML header (toml_parse) -> BuildRecipe structs
 2. Validate: BuildRecipe -> Result<warnings> (reject malformed early)
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
 4. Build:    (not yet implemented) download, extract, configure, make, install
@@ -78,5 +79,5 @@ strings. Handles deduplication: `FullRelro` implies both `-z,relro` and
 | `chrono` | Build timestamps |
 | `serde` + `serde_json` | Serialization for all types |
 | `sha2` | SHA-256 integrity hashing |
-| `toml` | Recipe file parsing |
+| `cyml` + `toml` | Recipe file parsing — `cyml` splits header/body, `toml` parses the header |
 | `tracing` | Structured logging |

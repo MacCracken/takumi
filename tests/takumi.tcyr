@@ -4,6 +4,7 @@ include "src/types.cyr"
 include "src/validate.cyr"
 include "src/topo.cyr"
 include "src/flags.cyr"
+include "src/recipe.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -496,6 +497,122 @@ fn main() {
     assert(str_eq_cstr(generate_ldflags(lf_x, "-Wl,--as-needed"), "-pie -Wl,--as-needed"), "pie + extra");
     assert(str_eq_cstr(generate_ldflags(vec_new(), "-Wl,-z,noexecstack"), "-Wl,-z,noexecstack"), "extra only");
     assert(str_eq_cstr(generate_ldflags(vec_new(), 0), ""), "all empty");
+
+    test_group("PackageMetadata: roundtrip");
+    var pkg_groups = vec_new();
+    vec_push(pkg_groups, "base");
+    vec_push(pkg_groups, "crypto");
+    var pkg = pkg_new("openssl", "3.5.2", "TLS/SSL library", "Apache-2.0", pkg_groups, 3, "x86_64");
+    assert(streq(pkg_name(pkg), "openssl"), "name");
+    assert(streq(pkg_version(pkg), "3.5.2"), "version");
+    assert(streq(pkg_description(pkg), "TLS/SSL library"), "description");
+    assert(streq(pkg_license(pkg), "Apache-2.0"), "license");
+    assert_eq(vec_len(pkg_groups(pkg)), 2, "groups length");
+    assert(streq(vec_get(pkg_groups(pkg), 0), "base"), "groups[0]");
+    assert(streq(vec_get(pkg_groups(pkg), 1), "crypto"), "groups[1]");
+    assert_eq(pkg_release(pkg), 3, "release");
+    assert(streq(pkg_arch(pkg), "x86_64"), "arch");
+
+    test_group("PackageMetadata: optional arch = 0 means None");
+    var pkg2 = pkg_new("hello", "1.0.0", "greeting", "MIT", vec_new(), 1, 0);
+    assert_eq(pkg_arch(pkg2), 0, "arch is 0");
+    assert_eq(vec_len(pkg_groups(pkg2)), 0, "empty groups");
+    assert_eq(pkg_release(pkg2), 1, "release defaults");
+
+    test_group("SourceSpec: roundtrip");
+    var patches = vec_new();
+    vec_push(patches, "fix-musl.patch");
+    vec_push(patches, "agnos-paths.patch");
+    var src = src_new("https://example.com/x.tar.gz",
+                      "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
+                      patches);
+    assert(streq(src_url(src), "https://example.com/x.tar.gz"), "url");
+    assert(streq(src_sha256(src), "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"), "sha256");
+    assert_eq(vec_len(src_patches(src)), 2, "patches length");
+    assert(streq(vec_get(src_patches(src), 1), "agnos-paths.patch"), "patches[1]");
+
+    test_group("SourceSpec: no patches");
+    var src2 = src_new("https://example.com/y.tar.gz", "abc", vec_new());
+    assert_eq(vec_len(src_patches(src2)), 0, "empty patches");
+
+    test_group("DependencySpec: roundtrip");
+    var rt = vec_new(); vec_push(rt, "glibc"); vec_push(rt, "zlib");
+    var bd = vec_new(); vec_push(bd, "perl"); vec_push(bd, "make");
+    var dep = dep_new(rt, bd);
+    assert_eq(vec_len(dep_runtime(dep)), 2, "runtime length");
+    assert(streq(vec_get(dep_runtime(dep), 0), "glibc"), "runtime[0]");
+    assert_eq(vec_len(dep_build(dep)), 2, "build length");
+    assert(streq(vec_get(dep_build(dep), 1), "make"), "build[1]");
+
+    test_group("DependencySpec: empty");
+    var dep_empty = dep_new(vec_new(), vec_new());
+    assert_eq(vec_len(dep_runtime(dep_empty)), 0, "empty runtime");
+    assert_eq(vec_len(dep_build(dep_empty)), 0, "empty build");
+
+    test_group("BuildSteps: all fields set");
+    var bld = bld_new("./configure --prefix=/usr",
+                      "make -j$(nproc)",
+                      "make test",
+                      "make DESTDIR=$PKG install",
+                      "sed -i 's/foo/bar/' Makefile.in",
+                      "rm -rf $PKG/usr/share/doc");
+    assert(streq(bld_configure(bld), "./configure --prefix=/usr"), "configure");
+    assert(streq(bld_make(bld), "make -j$(nproc)"), "make");
+    assert(streq(bld_check(bld), "make test"), "check");
+    assert(streq(bld_install(bld), "make DESTDIR=$PKG install"), "install");
+    assert(streq(bld_pre_build(bld), "sed -i 's/foo/bar/' Makefile.in"), "pre_build");
+    assert(streq(bld_post_install(bld), "rm -rf $PKG/usr/share/doc"), "post_install");
+
+    test_group("BuildSteps: all-None is valid");
+    var bld0 = bld_new(0, 0, 0, 0, 0, 0);
+    assert_eq(bld_configure(bld0), 0, "configure None");
+    assert_eq(bld_make(bld0), 0, "make None");
+    assert_eq(bld_check(bld0), 0, "check None");
+    assert_eq(bld_install(bld0), 0, "install None");
+    assert_eq(bld_pre_build(bld0), 0, "pre_build None");
+    assert_eq(bld_post_install(bld0), 0, "post_install None");
+
+    test_group("SecurityFlags: roundtrip");
+    var hardening = vec_new();
+    vec_push(hardening, HF_PIE);
+    vec_push(hardening, HF_FULL_RELRO);
+    vec_push(hardening, HF_FORTIFY);
+    var sec = sec_new(hardening, "-O2", "-Wl,--as-needed");
+    assert_eq(vec_len(sec_hardening(sec)), 3, "hardening length");
+    assert_eq(vec_get(sec_hardening(sec), 0), HF_PIE, "hardening[0] = HF_PIE");
+    assert_eq(vec_get(sec_hardening(sec), 1), HF_FULL_RELRO, "hardening[1] = HF_FULL_RELRO");
+    assert(streq(sec_cflags(sec), "-O2"), "cflags");
+    assert(streq(sec_ldflags(sec), "-Wl,--as-needed"), "ldflags");
+
+    test_group("SecurityFlags: no extra flags");
+    var sec0 = sec_new(vec_new(), 0, 0);
+    assert_eq(vec_len(sec_hardening(sec0)), 0, "empty hardening");
+    assert_eq(sec_cflags(sec0), 0, "cflags None");
+    assert_eq(sec_ldflags(sec0), 0, "ldflags None");
+
+    test_group("BuildRecipe: full composition");
+    var full_pkg = pkg_new("hello", "1.0.0", "greeting", "MIT", vec_new(), 1, 0);
+    var full_src = src_new("https://example.com/hello.tar.gz", "deadbeef", vec_new());
+    var full_dep = dep_new(vec_new(), vec_new());
+    var full_bld = bld_new("./configure", "make", 0, "make install", 0, 0);
+    var full_sec = sec_new(vec_new(), 0, 0);
+    var recipe = recipe_new(full_pkg, full_src, full_dep, full_bld, full_sec);
+    # Sub-struct pointers survive the composition.
+    assert_eq(recipe_package(recipe), full_pkg, "package pointer matches");
+    assert_eq(recipe_source(recipe), full_src, "source pointer matches");
+    assert_eq(recipe_depends(recipe), full_dep, "depends pointer matches");
+    assert_eq(recipe_build(recipe), full_bld, "build pointer matches");
+    assert_eq(recipe_security(recipe), full_sec, "security pointer matches");
+    # And fields reach through from the recipe to the leaves.
+    assert(streq(pkg_name(recipe_package(recipe)), "hello"), "recipe -> pkg.name");
+    assert(streq(src_url(recipe_source(recipe)), "https://example.com/hello.tar.gz"), "recipe -> src.url");
+    assert(streq(bld_make(recipe_build(recipe)), "make"), "recipe -> bld.make");
+
+    test_group("BuildRecipe: independence — two recipes don't alias");
+    var pkg_a = pkg_new("a", "1", "d", "L", vec_new(), 1, 0);
+    var pkg_b = pkg_new("b", "2", "d", "L", vec_new(), 1, 0);
+    assert(streq(pkg_name(pkg_a), "a"), "A unchanged after B");
+    assert(streq(pkg_name(pkg_b), "b"), "B is B");
 
     return assert_summary();
 }

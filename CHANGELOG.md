@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Language**: ported from Rust to Cyrius (toolchain pinned to 5.5.23). Rust
   scaffold preserved under `rust-old/` as the authoritative reference until
   the port reaches feature parity.
+- **Recipe format**: switched from plain TOML to [CYML](https://github.com/MacCracken/cyrius/blob/main/lib/cyml.cyr)
+  (TOML header above `---`, markdown body below, parsed zero-copy). One
+  file now holds both the structured recipe metadata and the prose build
+  notes / upgrade guidance that used to live in separate docs. `.toml`
+  recipes in zugot will be renamed to `.cyml` as the port progresses.
+  Header parse still goes through `lib/toml.cyr`; CYML just gives the
+  body a first-class home.
 
 ### Added (Cyrius port)
 
@@ -57,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 31 new CFLAGS/LDFLAGS tests (per-flag, linker/compiler filtering,
   multi-flag ordering, FullRelro dedup in every position, extra
   appending). Total suite: **235 assertions, 0 failures**.
+- `src/recipe.cyr` — in-memory model for the parsed recipe. Five sub-
+  structs (`PackageMetadata`, `SourceSpec`, `DependencySpec`, `BuildSteps`,
+  `SecurityFlags`) plus the aggregate `BuildRecipe`. Offset-enum + alloc +
+  load64/store64 layout, matching cyrius's own `struct`-avoiding
+  convention (only `Str` in the entire stdlib uses `struct` syntax).
+  `_new` constructors and `_field` accessors per type. Strings are
+  cstrings throughout; `0` is `None` on the optional fields (`arch`,
+  `cflags`, `ldflags`, all `BuildSteps`). The parse boundary will
+  convert `Str` values out of `lib/toml.cyr` into cstrings before
+  populating these structs.
+- 53 new recipe-model tests (per-sub-struct roundtrip, optional-None
+  handling, full recipe composition, pointer-identity through the
+  aggregate, two-recipe independence). Total suite: **288 assertions,
+  0 failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 

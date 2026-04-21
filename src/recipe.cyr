@@ -1,0 +1,188 @@
+# takumi — in-memory recipe model.
+#
+# Ported from rust-old/src/lib.rs: BuildRecipe and its five children.
+# This file owns the *layout* only — no TOML/CYML parsing. The parser
+# in src/parse.cyr will build these structs; consumers (validate,
+# build, package) read them via the accessors below.
+#
+# String fields are cstrings (0 for None on the optional ones). Vec
+# fields are vec-of-cstring pointers. Enum fields are vec-of-i64
+# (HardeningFlag discriminants). This keeps equality and hashing
+# simple: everything the rest of the code sees is an i64, and the
+# parse boundary is the only place that touches Str.
+#
+# The offset enums are the on-disk-stable layout. Do not reorder
+# fields within a struct without bumping a layout version — accessor
+# callers assume these offsets.
+
+# ---------------------------------------------------------------------------
+# PackageMetadata — recipe [package] section.
+# name/version/description/license are required cstrings.
+# groups is a vec of cstring (possibly empty).
+# release is i64 (default 1 on parse).
+# arch is a cstring or 0 for None.
+# ---------------------------------------------------------------------------
+
+enum PkgOff {
+    PKG_NAME = 0;
+    PKG_VERSION = 8;
+    PKG_DESCRIPTION = 16;
+    PKG_LICENSE = 24;
+    PKG_GROUPS = 32;
+    PKG_RELEASE = 40;
+    PKG_ARCH = 48;
+    PKG_SIZE = 56;
+}
+
+fn pkg_new(name, version, description, license, groups, release, arch) {
+    var p = alloc(PKG_SIZE);
+    store64(p + PKG_NAME, name);
+    store64(p + PKG_VERSION, version);
+    store64(p + PKG_DESCRIPTION, description);
+    store64(p + PKG_LICENSE, license);
+    store64(p + PKG_GROUPS, groups);
+    store64(p + PKG_RELEASE, release);
+    store64(p + PKG_ARCH, arch);
+    return p;
+}
+
+fn pkg_name(p) { return load64(p + PKG_NAME); }
+fn pkg_version(p) { return load64(p + PKG_VERSION); }
+fn pkg_description(p) { return load64(p + PKG_DESCRIPTION); }
+fn pkg_license(p) { return load64(p + PKG_LICENSE); }
+fn pkg_groups(p) { return load64(p + PKG_GROUPS); }
+fn pkg_release(p) { return load64(p + PKG_RELEASE); }
+fn pkg_arch(p) { return load64(p + PKG_ARCH); }
+
+# ---------------------------------------------------------------------------
+# SourceSpec — recipe [source] section.
+# url + sha256 are required cstrings. patches is a vec of cstring.
+# ---------------------------------------------------------------------------
+
+enum SrcOff {
+    SRC_URL = 0;
+    SRC_SHA256 = 8;
+    SRC_PATCHES = 16;
+    SRC_SIZE = 24;
+}
+
+fn src_new(url, sha256, patches) {
+    var s = alloc(SRC_SIZE);
+    store64(s + SRC_URL, url);
+    store64(s + SRC_SHA256, sha256);
+    store64(s + SRC_PATCHES, patches);
+    return s;
+}
+
+fn src_url(s) { return load64(s + SRC_URL); }
+fn src_sha256(s) { return load64(s + SRC_SHA256); }
+fn src_patches(s) { return load64(s + SRC_PATCHES); }
+
+# ---------------------------------------------------------------------------
+# DependencySpec — recipe [depends] section.
+# Both are vecs of cstring (may be empty).
+# ---------------------------------------------------------------------------
+
+enum DepOff {
+    DEP_RUNTIME = 0;
+    DEP_BUILD = 8;
+    DEP_SIZE = 16;
+}
+
+fn dep_new(runtime, build) {
+    var d = alloc(DEP_SIZE);
+    store64(d + DEP_RUNTIME, runtime);
+    store64(d + DEP_BUILD, build);
+    return d;
+}
+
+fn dep_runtime(d) { return load64(d + DEP_RUNTIME); }
+fn dep_build(d) { return load64(d + DEP_BUILD); }
+
+# ---------------------------------------------------------------------------
+# BuildSteps — recipe [build] section.
+# Every field is an optional shell command: cstring or 0 for None.
+# ---------------------------------------------------------------------------
+
+enum BldOff {
+    BLD_CONFIGURE = 0;
+    BLD_MAKE = 8;
+    BLD_CHECK = 16;
+    BLD_INSTALL = 24;
+    BLD_PRE_BUILD = 32;
+    BLD_POST_INSTALL = 40;
+    BLD_SIZE = 48;
+}
+
+fn bld_new(configure, make, check, install, pre_build, post_install) {
+    var b = alloc(BLD_SIZE);
+    store64(b + BLD_CONFIGURE, configure);
+    store64(b + BLD_MAKE, make);
+    store64(b + BLD_CHECK, check);
+    store64(b + BLD_INSTALL, install);
+    store64(b + BLD_PRE_BUILD, pre_build);
+    store64(b + BLD_POST_INSTALL, post_install);
+    return b;
+}
+
+fn bld_configure(b) { return load64(b + BLD_CONFIGURE); }
+fn bld_make(b) { return load64(b + BLD_MAKE); }
+fn bld_check(b) { return load64(b + BLD_CHECK); }
+fn bld_install(b) { return load64(b + BLD_INSTALL); }
+fn bld_pre_build(b) { return load64(b + BLD_PRE_BUILD); }
+fn bld_post_install(b) { return load64(b + BLD_POST_INSTALL); }
+
+# ---------------------------------------------------------------------------
+# SecurityFlags — recipe [security] section.
+# hardening is a vec of HardeningFlag discriminants (i64 values).
+# cflags/ldflags are cstrings or 0 for None.
+# ---------------------------------------------------------------------------
+
+enum SecOff {
+    SEC_HARDENING = 0;
+    SEC_CFLAGS = 8;
+    SEC_LDFLAGS = 16;
+    SEC_SIZE = 24;
+}
+
+fn sec_new(hardening, cflags, ldflags) {
+    var s = alloc(SEC_SIZE);
+    store64(s + SEC_HARDENING, hardening);
+    store64(s + SEC_CFLAGS, cflags);
+    store64(s + SEC_LDFLAGS, ldflags);
+    return s;
+}
+
+fn sec_hardening(s) { return load64(s + SEC_HARDENING); }
+fn sec_cflags(s) { return load64(s + SEC_CFLAGS); }
+fn sec_ldflags(s) { return load64(s + SEC_LDFLAGS); }
+
+# ---------------------------------------------------------------------------
+# BuildRecipe — the whole recipe, composed of the five above.
+# Each field is a pointer to the matching sub-struct.
+# ---------------------------------------------------------------------------
+
+enum RecipeOff {
+    REC_PACKAGE = 0;
+    REC_SOURCE = 8;
+    REC_DEPENDS = 16;
+    REC_BUILD = 24;
+    REC_SECURITY = 32;
+    REC_SIZE = 40;
+}
+
+fn recipe_new(package, source, depends, build, security) {
+    var r = alloc(REC_SIZE);
+    store64(r + REC_PACKAGE, package);
+    store64(r + REC_SOURCE, source);
+    store64(r + REC_DEPENDS, depends);
+    store64(r + REC_BUILD, build);
+    store64(r + REC_SECURITY, security);
+    return r;
+}
+
+fn recipe_package(r) { return load64(r + REC_PACKAGE); }
+fn recipe_source(r) { return load64(r + REC_SOURCE); }
+fn recipe_depends(r) { return load64(r + REC_DEPENDS); }
+fn recipe_build(r) { return load64(r + REC_BUILD); }
+fn recipe_security(r) { return load64(r + REC_SECURITY); }
