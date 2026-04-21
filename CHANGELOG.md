@@ -47,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 69 new topological-sort tests (helpers, empty/single/chain/fan-out/
   diamond/external-dep/self-loop/mutual/3-cycle/partial-cycle/
   determinism/cycle_members). Total suite: **204 assertions, 0 failures**.
+- `src/flags.cyr` — GCC CFLAGS/LDFLAGS assembly from a
+  `HardeningFlag` vec plus an optional extra cstring. Rust behavior
+  preserved exactly: insertion order kept, linker-only flags skipped
+  from CFLAGS, compiler-only flags skipped from LDFLAGS. `FullRelro`
+  deduplication drops redundant `Relro` and `Bindnow` whenever
+  `FullRelro` is present, regardless of ordering. Shared
+  `cstr_join_spaces` utility mirrors `Vec::join(" ")`.
+- 31 new CFLAGS/LDFLAGS tests (per-flag, linker/compiler filtering,
+  multi-flag ordering, FullRelro dedup in every position, extra
+  appending). Total suite: **235 assertions, 0 failures**.
 
 ### Rust scaffold (prior to port, now frozen in `rust-old/`)
 

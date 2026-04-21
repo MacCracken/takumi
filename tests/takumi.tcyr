@@ -3,6 +3,7 @@
 include "src/types.cyr"
 include "src/validate.cyr"
 include "src/topo.cyr"
+include "src/flags.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -384,6 +385,117 @@ fn main() {
     assert(streq(vec_get(mem, 2), "C"), "missing[2] = C");
     var none_missing = cycle_members(vec_new(), vec_new());
     assert_eq(vec_len(none_missing), 0, "no input -> no missing");
+
+    test_group("cstr_join_spaces");
+    var jv = vec_new();
+    assert(str_eq_cstr(cstr_join_spaces(jv), ""), "empty vec -> empty string");
+    vec_push(jv, "a");
+    assert(str_eq_cstr(cstr_join_spaces(jv), "a"), "single -> no separator");
+    vec_push(jv, "b");
+    vec_push(jv, "c");
+    assert(str_eq_cstr(cstr_join_spaces(jv), "a b c"), "three parts");
+
+    test_group("generate_cflags: empty");
+    assert(str_eq_cstr(generate_cflags(vec_new(), 0), ""), "empty flags, no extra");
+
+    test_group("generate_cflags: each compiler flag alone");
+    var cf_pie = vec_new(); vec_push(cf_pie, HF_PIE);
+    assert(str_eq_cstr(generate_cflags(cf_pie, 0), "-fPIE"), "pie");
+    var cf_fortify = vec_new(); vec_push(cf_fortify, HF_FORTIFY);
+    assert(str_eq_cstr(generate_cflags(cf_fortify, 0), "-D_FORTIFY_SOURCE=2"), "fortify");
+    var cf_sp = vec_new(); vec_push(cf_sp, HF_STACK_PROTECTOR);
+    assert(str_eq_cstr(generate_cflags(cf_sp, 0), "-fstack-protector-strong"), "stackprotector");
+
+    test_group("generate_cflags: linker-only flags produce no output");
+    var cf_relro = vec_new(); vec_push(cf_relro, HF_RELRO);
+    assert(str_eq_cstr(generate_cflags(cf_relro, 0), ""), "relro alone -> empty");
+    var cf_fr = vec_new(); vec_push(cf_fr, HF_FULL_RELRO);
+    assert(str_eq_cstr(generate_cflags(cf_fr, 0), ""), "fullrelro alone -> empty");
+    var cf_bn = vec_new(); vec_push(cf_bn, HF_BIND_NOW);
+    assert(str_eq_cstr(generate_cflags(cf_bn, 0), ""), "bindnow alone -> empty");
+
+    test_group("generate_cflags: multiple flags preserve insertion order");
+    var cf_all = vec_new();
+    vec_push(cf_all, HF_PIE);
+    vec_push(cf_all, HF_FORTIFY);
+    vec_push(cf_all, HF_STACK_PROTECTOR);
+    assert(str_eq_cstr(generate_cflags(cf_all, 0), "-fPIE -D_FORTIFY_SOURCE=2 -fstack-protector-strong"), "all three in order");
+    var cf_reorder = vec_new();
+    vec_push(cf_reorder, HF_STACK_PROTECTOR);
+    vec_push(cf_reorder, HF_PIE);
+    assert(str_eq_cstr(generate_cflags(cf_reorder, 0), "-fstack-protector-strong -fPIE"), "reordered input -> reordered output");
+
+    test_group("generate_cflags: extra appended after hardening");
+    var cf_x1 = vec_new(); vec_push(cf_x1, HF_PIE);
+    assert(str_eq_cstr(generate_cflags(cf_x1, "-O2"), "-fPIE -O2"), "pie + -O2");
+    assert(str_eq_cstr(generate_cflags(vec_new(), "-O2"), "-O2"), "empty flags + extra");
+    assert(str_eq_cstr(generate_cflags(vec_new(), ""), ""), "empty extra string is still appended (zero-length)");
+
+    test_group("generate_cflags: linker-only flags filtered out of a mixed set");
+    var cf_mixed = vec_new();
+    vec_push(cf_mixed, HF_PIE);
+    vec_push(cf_mixed, HF_RELRO);
+    vec_push(cf_mixed, HF_FORTIFY);
+    vec_push(cf_mixed, HF_BIND_NOW);
+    assert(str_eq_cstr(generate_cflags(cf_mixed, 0), "-fPIE -D_FORTIFY_SOURCE=2"), "relro+bindnow dropped");
+
+    test_group("generate_ldflags: each linker flag alone");
+    var lf_pie = vec_new(); vec_push(lf_pie, HF_PIE);
+    assert(str_eq_cstr(generate_ldflags(lf_pie, 0), "-pie"), "pie");
+    var lf_relro = vec_new(); vec_push(lf_relro, HF_RELRO);
+    assert(str_eq_cstr(generate_ldflags(lf_relro, 0), "-Wl,-z,relro"), "relro alone");
+    var lf_fr = vec_new(); vec_push(lf_fr, HF_FULL_RELRO);
+    assert(str_eq_cstr(generate_ldflags(lf_fr, 0), "-Wl,-z,relro,-z,now"), "full_relro alone");
+    var lf_bn = vec_new(); vec_push(lf_bn, HF_BIND_NOW);
+    assert(str_eq_cstr(generate_ldflags(lf_bn, 0), "-Wl,-z,now"), "bindnow alone");
+
+    test_group("generate_ldflags: compiler-only flags produce no output");
+    var lf_fortify = vec_new(); vec_push(lf_fortify, HF_FORTIFY);
+    assert(str_eq_cstr(generate_ldflags(lf_fortify, 0), ""), "fortify -> empty");
+    var lf_sp = vec_new(); vec_push(lf_sp, HF_STACK_PROTECTOR);
+    assert(str_eq_cstr(generate_ldflags(lf_sp, 0), ""), "stackprotector -> empty");
+
+    test_group("generate_ldflags: FullRelro deduplication");
+    var lf_dedup = vec_new();
+    vec_push(lf_dedup, HF_RELRO);
+    vec_push(lf_dedup, HF_FULL_RELRO);
+    vec_push(lf_dedup, HF_BIND_NOW);
+    assert(str_eq_cstr(generate_ldflags(lf_dedup, 0), "-Wl,-z,relro,-z,now"), "relro+fullrelro+bindnow -> just fullrelro");
+    var lf_dedup2 = vec_new();
+    vec_push(lf_dedup2, HF_FULL_RELRO);
+    vec_push(lf_dedup2, HF_RELRO);
+    vec_push(lf_dedup2, HF_BIND_NOW);
+    assert(str_eq_cstr(generate_ldflags(lf_dedup2, 0), "-Wl,-z,relro,-z,now"), "dedup when fullrelro is first");
+    var lf_dedup3 = vec_new();
+    vec_push(lf_dedup3, HF_BIND_NOW);
+    vec_push(lf_dedup3, HF_RELRO);
+    vec_push(lf_dedup3, HF_FULL_RELRO);
+    assert(str_eq_cstr(generate_ldflags(lf_dedup3, 0), "-Wl,-z,relro,-z,now"), "dedup when fullrelro is last");
+
+    test_group("generate_ldflags: combinations");
+    var lf_combo = vec_new();
+    vec_push(lf_combo, HF_PIE);
+    vec_push(lf_combo, HF_FULL_RELRO);
+    assert(str_eq_cstr(generate_ldflags(lf_combo, 0), "-pie -Wl,-z,relro,-z,now"), "pie + full_relro");
+    var lf_combo2 = vec_new();
+    vec_push(lf_combo2, HF_PIE);
+    vec_push(lf_combo2, HF_RELRO);
+    vec_push(lf_combo2, HF_BIND_NOW);
+    assert(str_eq_cstr(generate_ldflags(lf_combo2, 0), "-pie -Wl,-z,relro -Wl,-z,now"), "pie + relro + bindnow (no dedup)");
+
+    test_group("generate_ldflags: compiler flags filtered out of a mixed set");
+    var lf_mixed = vec_new();
+    vec_push(lf_mixed, HF_PIE);
+    vec_push(lf_mixed, HF_FORTIFY);
+    vec_push(lf_mixed, HF_STACK_PROTECTOR);
+    vec_push(lf_mixed, HF_RELRO);
+    assert(str_eq_cstr(generate_ldflags(lf_mixed, 0), "-pie -Wl,-z,relro"), "compiler flags dropped");
+
+    test_group("generate_ldflags: extra appended");
+    var lf_x = vec_new(); vec_push(lf_x, HF_PIE);
+    assert(str_eq_cstr(generate_ldflags(lf_x, "-Wl,--as-needed"), "-pie -Wl,--as-needed"), "pie + extra");
+    assert(str_eq_cstr(generate_ldflags(vec_new(), "-Wl,-z,noexecstack"), "-Wl,-z,noexecstack"), "extra only");
+    assert(str_eq_cstr(generate_ldflags(vec_new(), 0), ""), "all empty");
 
     return assert_summary();
 }

@@ -1,0 +1,64 @@
+# takumi — CFLAGS/LDFLAGS assembly from a SecurityFlags hardening set.
+#
+# Ported from rust-old/src/lib.rs: generate_cflags / generate_ldflags.
+# Inputs:
+#   flags  — vec of HardeningFlag discriminants (HF_PIE, HF_RELRO, …).
+#   extra  — extra cflags/ldflags cstring (0 means none).
+# Output: a Str with parts joined by single spaces, matching Rust's
+#         `Vec::join(" ")`.
+#
+# FullRelro dedup (preserves the Rust behavior):
+#   When HF_FULL_RELRO is present, HF_RELRO and HF_BIND_NOW are skipped
+#   because `-Wl,-z,relro,-z,now` already covers both. This keeps the
+#   linker command line clean rather than repeating flags.
+
+# Join cstring parts with single-space separators.
+fn cstr_join_spaces(parts) {
+    var sb = str_builder_new();
+    var n = vec_len(parts);
+    var i = 0;
+    while (i < n) {
+        if (i > 0) { str_builder_add_cstr(sb, " "); }
+        str_builder_add_cstr(sb, vec_get(parts, i));
+        i = i + 1;
+    }
+    return str_builder_build(sb);
+}
+
+fn generate_cflags(flags, extra) {
+    var parts = vec_new();
+    var n = vec_len(flags);
+    var i = 0;
+    while (i < n) {
+        var flag = vec_get(flags, i);
+        if (flag == HF_PIE) { vec_push(parts, "-fPIE"); }
+        elif (flag == HF_FORTIFY) { vec_push(parts, "-D_FORTIFY_SOURCE=2"); }
+        elif (flag == HF_STACK_PROTECTOR) { vec_push(parts, "-fstack-protector-strong"); }
+        i = i + 1;
+    }
+    if (extra != 0) { vec_push(parts, extra); }
+    return cstr_join_spaces(parts);
+}
+
+fn generate_ldflags(flags, extra) {
+    var has_full_relro = 0;
+    if (vec_find(flags, HF_FULL_RELRO) >= 0) { has_full_relro = 1; }
+
+    var parts = vec_new();
+    var n = vec_len(flags);
+    var i = 0;
+    while (i < n) {
+        var flag = vec_get(flags, i);
+        if (flag == HF_PIE) { vec_push(parts, "-pie"); }
+        elif (flag == HF_RELRO) {
+            if (has_full_relro == 0) { vec_push(parts, "-Wl,-z,relro"); }
+        }
+        elif (flag == HF_FULL_RELRO) { vec_push(parts, "-Wl,-z,relro,-z,now"); }
+        elif (flag == HF_BIND_NOW) {
+            if (has_full_relro == 0) { vec_push(parts, "-Wl,-z,now"); }
+        }
+        i = i + 1;
+    }
+    if (extra != 0) { vec_push(parts, extra); }
+    return cstr_join_spaces(parts);
+}
