@@ -1,0 +1,106 @@
+# takumi — core enum types.
+#
+# Ported from rust-old/src/lib.rs: HardeningFlag, ArkFileType, BuildStatus.
+#
+# Variants with Rust payloads (ArkFileType::Symlink(target), BuildStatus::Failed(msg))
+# become tag-only here; the payload lives in the owning struct (ArkFileEntry's
+# symlink_target, BuildLogEntry's fail_msg). That keeps enums to a single i64.
+
+# ---------------------------------------------------------------------------
+# HardeningFlag — compiler/linker hardening toggles on a recipe.
+# Values are stable: they appear in .ark manifests and must not be renumbered.
+# ---------------------------------------------------------------------------
+
+enum HardeningFlag {
+    HF_PIE = 0;
+    HF_RELRO = 1;
+    HF_FULL_RELRO = 2;
+    HF_FORTIFY = 3;
+    HF_STACK_PROTECTOR = 4;
+    HF_BIND_NOW = 5;
+}
+
+# Canonical lowercase name (matches the Rust Display impl and the
+# #[serde(rename_all = "lowercase")] discriminator).
+fn hf_to_cstr(flag) {
+    if (flag == HF_PIE) { return "pie"; }
+    elif (flag == HF_RELRO) { return "relro"; }
+    elif (flag == HF_FULL_RELRO) { return "fullrelro"; }
+    elif (flag == HF_FORTIFY) { return "fortify"; }
+    elif (flag == HF_STACK_PROTECTOR) { return "stackprotector"; }
+    elif (flag == HF_BIND_NOW) { return "bindnow"; }
+    return "unknown";
+}
+
+# Parse a hardening flag. Accepts the canonical name and the
+# kebab/snake-case aliases the Rust FromStr impl accepted.
+# Returns -1 on unknown input (no exceptions in Cyrius — caller checks).
+fn hf_from_cstr(s) {
+    if (streq(s, "pie") == 1) { return HF_PIE; }
+    elif (streq(s, "relro") == 1) { return HF_RELRO; }
+    elif (streq(s, "fullrelro") == 1) { return HF_FULL_RELRO; }
+    elif (streq(s, "full_relro") == 1) { return HF_FULL_RELRO; }
+    elif (streq(s, "full-relro") == 1) { return HF_FULL_RELRO; }
+    elif (streq(s, "fortify") == 1) { return HF_FORTIFY; }
+    elif (streq(s, "stackprotector") == 1) { return HF_STACK_PROTECTOR; }
+    elif (streq(s, "stack_protector") == 1) { return HF_STACK_PROTECTOR; }
+    elif (streq(s, "stack-protector") == 1) { return HF_STACK_PROTECTOR; }
+    elif (streq(s, "bindnow") == 1) { return HF_BIND_NOW; }
+    elif (streq(s, "bind_now") == 1) { return HF_BIND_NOW; }
+    elif (streq(s, "bind-now") == 1) { return HF_BIND_NOW; }
+    return 0 - 1;
+}
+
+# ---------------------------------------------------------------------------
+# ArkFileType — classification of a file entry inside an .ark package.
+# Symlink target is stored alongside in ArkFileEntry, not here.
+# ---------------------------------------------------------------------------
+
+enum ArkFileType {
+    ARK_FT_REGULAR = 0;
+    ARK_FT_DIRECTORY = 1;
+    ARK_FT_SYMLINK = 2;
+    ARK_FT_CONFIG = 3;
+}
+
+fn ark_ft_to_cstr(ty) {
+    if (ty == ARK_FT_REGULAR) { return "regular"; }
+    elif (ty == ARK_FT_DIRECTORY) { return "directory"; }
+    elif (ty == ARK_FT_SYMLINK) { return "symlink"; }
+    elif (ty == ARK_FT_CONFIG) { return "config"; }
+    return "unknown";
+}
+
+# ---------------------------------------------------------------------------
+# BuildStatus — per-package state machine during a build.
+# Failure message lives on BuildLogEntry; BS_FAILED is only the tag.
+# ---------------------------------------------------------------------------
+
+enum BuildStatus {
+    BS_PENDING = 0;
+    BS_DOWNLOADING = 1;
+    BS_EXTRACTING = 2;
+    BS_CONFIGURING = 3;
+    BS_BUILDING = 4;
+    BS_TESTING = 5;
+    BS_INSTALLING = 6;
+    BS_PACKAGING = 7;
+    BS_SIGNING = 8;
+    BS_COMPLETE = 9;
+    BS_FAILED = 10;
+}
+
+fn bs_to_cstr(status) {
+    if (status == BS_PENDING) { return "pending"; }
+    elif (status == BS_DOWNLOADING) { return "downloading"; }
+    elif (status == BS_EXTRACTING) { return "extracting"; }
+    elif (status == BS_CONFIGURING) { return "configuring"; }
+    elif (status == BS_BUILDING) { return "building"; }
+    elif (status == BS_TESTING) { return "testing"; }
+    elif (status == BS_INSTALLING) { return "installing"; }
+    elif (status == BS_PACKAGING) { return "packaging"; }
+    elif (status == BS_SIGNING) { return "signing"; }
+    elif (status == BS_COMPLETE) { return "complete"; }
+    elif (status == BS_FAILED) { return "failed"; }
+    return "unknown";
+}

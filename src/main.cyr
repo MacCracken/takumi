@@ -1,7 +1,7 @@
-# takumi — Cyrius port
-# Ported from 2034 lines of Rust
+# takumi — package build system for AGNOS.
+# Cyrius port (in progress); Rust reference lives in rust-old/.
 
-# Stdlib auto-included via cyrius.cyml
+include "src/types.cyr"
 
 fn main() {
     alloc_init();

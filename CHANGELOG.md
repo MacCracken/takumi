@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
+
+- **Language**: ported from Rust to Cyrius (toolchain pinned to 5.5.23). Rust
+  scaffold preserved under `rust-old/` as the authoritative reference until
+  the port reaches feature parity.
+
+### Added (Cyrius port)
+
+- `src/types.cyr` — `HardeningFlag`, `ArkFileType`, `BuildStatus` enums with
+  stable integer discriminants and canonical lowercase name conversions.
+  `hf_from_cstr` accepts the same snake/kebab-case aliases as the Rust
+  `FromStr` impl (`full_relro`, `full-relro`, `stack_protector`, …).
+  Variants with Rust payloads (`Symlink(String)`, `Failed(String)`) are
+  tag-only; the payload will live on the owning struct.
+- 64 tests in `tests/takumi.tcyr` covering discriminants, canonical names,
+  aliases, unknown-input rejection, and name roundtrip.
+
+### Rust scaffold (prior to port, now frozen in `rust-old/`)
 
 - Core build recipe types: `BuildRecipe`, `PackageMetadata`, `SourceSpec`,
   `DependencySpec`, `BuildSteps`, `SecurityFlags`, `HardeningFlag`

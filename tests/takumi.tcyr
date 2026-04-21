@@ -1,10 +1,94 @@
-# takumi test suite
+# takumi test suite — core types.
+
+include "src/types.cyr"
 
 fn main() {
     alloc_init();
-    test_group("smoke");
-    assert(1, "true is true");
-    assert_eq(1 + 1, 2, "math works");
+
+    test_group("HardeningFlag values are stable");
+    assert_eq(HF_PIE, 0, "HF_PIE=0");
+    assert_eq(HF_RELRO, 1, "HF_RELRO=1");
+    assert_eq(HF_FULL_RELRO, 2, "HF_FULL_RELRO=2");
+    assert_eq(HF_FORTIFY, 3, "HF_FORTIFY=3");
+    assert_eq(HF_STACK_PROTECTOR, 4, "HF_STACK_PROTECTOR=4");
+    assert_eq(HF_BIND_NOW, 5, "HF_BIND_NOW=5");
+
+    test_group("HardeningFlag canonical names");
+    assert(streq(hf_to_cstr(HF_PIE), "pie"), "to_cstr pie");
+    assert(streq(hf_to_cstr(HF_RELRO), "relro"), "to_cstr relro");
+    assert(streq(hf_to_cstr(HF_FULL_RELRO), "fullrelro"), "to_cstr fullrelro");
+    assert(streq(hf_to_cstr(HF_FORTIFY), "fortify"), "to_cstr fortify");
+    assert(streq(hf_to_cstr(HF_STACK_PROTECTOR), "stackprotector"), "to_cstr stackprotector");
+    assert(streq(hf_to_cstr(HF_BIND_NOW), "bindnow"), "to_cstr bindnow");
+
+    test_group("HardeningFlag from_cstr canonical");
+    assert_eq(hf_from_cstr("pie"), HF_PIE, "from_cstr pie");
+    assert_eq(hf_from_cstr("relro"), HF_RELRO, "from_cstr relro");
+    assert_eq(hf_from_cstr("fullrelro"), HF_FULL_RELRO, "from_cstr fullrelro");
+    assert_eq(hf_from_cstr("fortify"), HF_FORTIFY, "from_cstr fortify");
+    assert_eq(hf_from_cstr("stackprotector"), HF_STACK_PROTECTOR, "from_cstr stackprotector");
+    assert_eq(hf_from_cstr("bindnow"), HF_BIND_NOW, "from_cstr bindnow");
+
+    test_group("HardeningFlag from_cstr aliases");
+    assert_eq(hf_from_cstr("full_relro"), HF_FULL_RELRO, "full_relro alias");
+    assert_eq(hf_from_cstr("full-relro"), HF_FULL_RELRO, "full-relro alias");
+    assert_eq(hf_from_cstr("stack_protector"), HF_STACK_PROTECTOR, "stack_protector alias");
+    assert_eq(hf_from_cstr("stack-protector"), HF_STACK_PROTECTOR, "stack-protector alias");
+    assert_eq(hf_from_cstr("bind_now"), HF_BIND_NOW, "bind_now alias");
+    assert_eq(hf_from_cstr("bind-now"), HF_BIND_NOW, "bind-now alias");
+
+    test_group("HardeningFlag from_cstr rejects unknown");
+    assert_eq(hf_from_cstr(""), 0 - 1, "empty rejected");
+    assert_eq(hf_from_cstr("PIE"), 0 - 1, "uppercase rejected");
+    assert_eq(hf_from_cstr("pi"), 0 - 1, "prefix rejected");
+    assert_eq(hf_from_cstr("nonsense"), 0 - 1, "garbage rejected");
+
+    test_group("HardeningFlag roundtrip through name");
+    assert_eq(hf_from_cstr(hf_to_cstr(HF_PIE)), HF_PIE, "roundtrip pie");
+    assert_eq(hf_from_cstr(hf_to_cstr(HF_RELRO)), HF_RELRO, "roundtrip relro");
+    assert_eq(hf_from_cstr(hf_to_cstr(HF_FULL_RELRO)), HF_FULL_RELRO, "roundtrip fullrelro");
+    assert_eq(hf_from_cstr(hf_to_cstr(HF_FORTIFY)), HF_FORTIFY, "roundtrip fortify");
+    assert_eq(hf_from_cstr(hf_to_cstr(HF_STACK_PROTECTOR)), HF_STACK_PROTECTOR, "roundtrip stackprotector");
+    assert_eq(hf_from_cstr(hf_to_cstr(HF_BIND_NOW)), HF_BIND_NOW, "roundtrip bindnow");
+
+    test_group("ArkFileType values are stable");
+    assert_eq(ARK_FT_REGULAR, 0, "ARK_FT_REGULAR=0");
+    assert_eq(ARK_FT_DIRECTORY, 1, "ARK_FT_DIRECTORY=1");
+    assert_eq(ARK_FT_SYMLINK, 2, "ARK_FT_SYMLINK=2");
+    assert_eq(ARK_FT_CONFIG, 3, "ARK_FT_CONFIG=3");
+
+    test_group("ArkFileType names");
+    assert(streq(ark_ft_to_cstr(ARK_FT_REGULAR), "regular"), "regular");
+    assert(streq(ark_ft_to_cstr(ARK_FT_DIRECTORY), "directory"), "directory");
+    assert(streq(ark_ft_to_cstr(ARK_FT_SYMLINK), "symlink"), "symlink");
+    assert(streq(ark_ft_to_cstr(ARK_FT_CONFIG), "config"), "config");
+
+    test_group("BuildStatus values are stable");
+    assert_eq(BS_PENDING, 0, "BS_PENDING=0");
+    assert_eq(BS_DOWNLOADING, 1, "BS_DOWNLOADING=1");
+    assert_eq(BS_EXTRACTING, 2, "BS_EXTRACTING=2");
+    assert_eq(BS_CONFIGURING, 3, "BS_CONFIGURING=3");
+    assert_eq(BS_BUILDING, 4, "BS_BUILDING=4");
+    assert_eq(BS_TESTING, 5, "BS_TESTING=5");
+    assert_eq(BS_INSTALLING, 6, "BS_INSTALLING=6");
+    assert_eq(BS_PACKAGING, 7, "BS_PACKAGING=7");
+    assert_eq(BS_SIGNING, 8, "BS_SIGNING=8");
+    assert_eq(BS_COMPLETE, 9, "BS_COMPLETE=9");
+    assert_eq(BS_FAILED, 10, "BS_FAILED=10");
+
+    test_group("BuildStatus names");
+    assert(streq(bs_to_cstr(BS_PENDING), "pending"), "pending");
+    assert(streq(bs_to_cstr(BS_DOWNLOADING), "downloading"), "downloading");
+    assert(streq(bs_to_cstr(BS_EXTRACTING), "extracting"), "extracting");
+    assert(streq(bs_to_cstr(BS_CONFIGURING), "configuring"), "configuring");
+    assert(streq(bs_to_cstr(BS_BUILDING), "building"), "building");
+    assert(streq(bs_to_cstr(BS_TESTING), "testing"), "testing");
+    assert(streq(bs_to_cstr(BS_INSTALLING), "installing"), "installing");
+    assert(streq(bs_to_cstr(BS_PACKAGING), "packaging"), "packaging");
+    assert(streq(bs_to_cstr(BS_SIGNING), "signing"), "signing");
+    assert(streq(bs_to_cstr(BS_COMPLETE), "complete"), "complete");
+    assert(streq(bs_to_cstr(BS_FAILED), "failed"), "failed");
+
     return assert_summary();
 }
 
