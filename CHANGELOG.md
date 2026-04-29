@@ -16,7 +16,7 @@ Full rewrite from Rust to Cyrius. Version jumped from the pre-release
 [ark](https://github.com/MacCracken/ark) 0.8.0 and align cadence across
 the AGNOS package-manager stack. This release reaches **in-memory
 parity with the 0.1.0 Rust scaffold** — every type, pure function, and
-benchmark has a Cyrius counterpart (see [BENCHMARKS.md](BENCHMARKS.md)
+benchmark has a Cyrius counterpart (see [benchmarks-rust-v-cyrius.md](benchmarks-rust-v-cyrius.md)
 for measured numbers). I/O (download / extract / build / archive /
 sign) and the CLI entry point remain in the 0.9.x roadmap.
 
@@ -141,7 +141,7 @@ Nine source files, ~1100 lines of Cyrius.
   scans via `tbs_load_all_recipes`, and confirms only the `.cyml`
   files register.
 - `tests/takumi.bcyr` — 11 benchmarks mirroring `rust-old/benches/
-  takumi_bench.rs`. See [BENCHMARKS.md](BENCHMARKS.md) for the full
+  takumi_bench.rs`. See [benchmarks-rust-v-cyrius.md](benchmarks-rust-v-cyrius.md) for the full
   parity table; the Rust `manifest_json_roundtrip` bench is
   dropped (no serde in the port — equivalent path is the
   `man_alloc` + setter sequence, O(13) and covered by
@@ -150,7 +150,7 @@ Nine source files, ~1100 lines of Cyrius.
 ### Performance (measured vs. rust-old baseline)
 
 All runs on the same x86_64 Linux host. Full table in
-[BENCHMARKS.md](BENCHMARKS.md). Summary:
+[benchmarks-rust-v-cyrius.md](benchmarks-rust-v-cyrius.md). Summary:
 
 | Benchmark                       | Rust   | Cyrius  | Cyrius / Rust |
 |---------------------------------|--------|---------|---------------|

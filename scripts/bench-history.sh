@@ -7,7 +7,7 @@
 # If no label is given, the current git short-hash is used. Appends a
 # one-line-per-bench CSV row to `bench-history.csv` so numbers can be
 # tracked across commits and compared against the Rust baseline in
-# BENCHMARKS.md.
+# benchmarks-rust-v-cyrius.md.
 
 set -euo pipefail
 

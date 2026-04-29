@@ -17,7 +17,7 @@
 - [x] Recursive `.cyml` directory scan via `tbs_load_all_recipes`
 - [x] Benchmark parity — 11 of 12 Rust benches ported
       (`manifest_json_roundtrip` dropped; no serde in Cyrius). See
-      [BENCHMARKS.md](../../BENCHMARKS.md)
+      [benchmarks-rust-v-cyrius.md](../../benchmarks-rust-v-cyrius.md)
 - [x] `#[non_exhaustive]` on all public enums
 - [x] `#[must_use]` on all pure functions
 - [x] Serde roundtrip tests for all types (74 tests)
