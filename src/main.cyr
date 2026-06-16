@@ -11,6 +11,9 @@ include "src/ark.cyr"
 include "src/package.cyr"
 include "src/engine.cyr"
 
+# Entry point: initialize the allocator and report readiness.
+# The Cyrius port is in progress; the CLI surface lands as engine
+# wiring is completed (Rust reference remains under rust-old/).
 fn main() {
     alloc_init();
     println("takumi ready");

@@ -1270,7 +1270,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.8.0"), "builder stamp is takumi/0.8.0");
+    assert(streq(man_builder(cam_m), "takumi/0.8.1"), "builder stamp is takumi/0.8.1");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");

@@ -79,5 +79,5 @@ strings. Handles deduplication: `FullRelro` implies both `-z,relro` and
 | `chrono` | Build timestamps |
 | `serde` + `serde_json` | Serialization for all types |
 | `sha2` | SHA-256 integrity hashing |
-| `cyml` + `toml` | Recipe file parsing — `cyml` splits header/body, `toml` parses the header |
+| `bayan` (stdlib) | Recipe file parsing — `cyml_parse` splits header/body, `toml_parse` parses the header (absorbed into stdlib `bayan` as of 0.8.1; formerly vendored `lib/cyml.cyr` + `lib/toml.cyr`) |
 | `tracing` | Structured logging |

@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.1] - 2026-06-16
+
+Toolchain and dependency refresh. No source-level behavior change —
+all 543 tests pass and benchmarks hold at parity (`parse_full_recipe`
+36 µs, `resolve_build_order_300` 444 µs, `create_file_list_26_files`
+412 µs, `sha256_1mb` 3.81 ms on this host). The headline change is the
+CYML/TOML/bigint parser migration: the Cyrius standard library absorbed
+takumi's recipe-parsing primitives into `bayan`, so the locally
+vendored copies are retired in favor of the upstream module.
+
+### Changed
+
+- **Toolchain**: pinned Cyrius bumped **5.5.23 → 6.2.12** (`cyrius.cyml`).
+- **CYML/TOML parsing now comes from stdlib `bayan`**: `cyml_parse`,
+  `cyml_doc_header`/`cyml_doc_header_len`, `toml_parse`, `toml_get`,
+  `toml_section_name`/`toml_section_pairs` (and the 256-bit integer
+  helpers they relied on) are now provided by `lib/bayan.cyr`. The
+  function names and arities are unchanged, so `src/parse.cyr` is
+  untouched. This matches ark and nous, which already consume `bayan`.
+- **Vendored stdlib refreshed to the 6.2.12 snapshot** (`lib/*.cyr`).
+  The 6.x stdlib split slice subscripting into `lib/slice.cyr`, which
+  `agnosys` now requires; `slice` is added to the `[deps] stdlib` list
+  ahead of the modules that pull `agnosys`.
+- **`sigil` dependency 2.9.0 → 3.8.0** (`cyrius.cyml [deps.sigil]`).
+  `lib/sigil.cyr` remains a symlink to the sibling `../sigil/dist`
+  bundle, which is at 3.8.0.
+- **Builder stamp**: `ArkManifest.builder` is now `takumi/0.8.1`
+  (`src/package.cyr`).
+
+### Added
+
+- `[deps] stdlib` gains `slice`, `process`, `bayan`, `random`, and
+  `thread_local` — required by the refreshed `agnosys`/`sigil` bundles
+  and the `bayan` parser. Vendored into `lib/` from the 6.2.12 snapshot.
+
+### Removed
+
+- `lib/cyml.cyr`, `lib/toml.cyr`, and `lib/bigint.cyr` — superseded by
+  the stdlib `bayan` module. Their `cyml`/`toml`/`bigint` entries are
+  dropped from the `[deps] stdlib` list.
+
 ## [0.8.0] - 2026-04-21
 
 Full rewrite from Rust to Cyrius. Version jumped from the pre-release
