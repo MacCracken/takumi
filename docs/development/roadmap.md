@@ -40,7 +40,10 @@
 - [ ] Patch application
 - [ ] Build execution (shell-out to configure/make/install)
 - [ ] Fake-root installation directory management
-- [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format)
+- [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format) —
+      tracked on ark's roadmap (ark `docs/development/roadmap.md`, "`.ark`
+      package format" backlog); conformance ref is `src/ark_format.cyr`
+      + [ADR 0001](../adr/0001-ark-binary-format.md)
 - [ ] `main.cyr` CLI entry point (replaces Rust's `main.rs`)
 - [ ] Integration tests with real recipe files
 - [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, to
