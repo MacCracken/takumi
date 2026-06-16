@@ -48,6 +48,8 @@ arc to settle the input/extraction security surface before the pre-v1 audit.
 
 ### Changed
 
+- Toolchain pin **6.2.12 → 6.2.14**; vendored `lib/` re-synced from the 6.2.14
+  snapshot (`cyrius lib sync`), clearing the pin-drift warning.
 - Builder stamp → `takumi/0.8.3`.
 - Roadmap: symlink classification, `.tar`/`.tar.gz` extraction, and source
   verification moved to Completed; remaining 0.9.x I/O (network download,

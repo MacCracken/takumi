@@ -4,7 +4,7 @@ version = "0.8.3"
 description = "takumi — Cyrius port (from 2034 lines of Rust)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.2.12"
+cyrius = "6.2.14"
 
 [build]
 entry = "src/main.cyr"

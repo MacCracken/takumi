@@ -26,9 +26,25 @@ var CLOCK_MONOTONIC_RAW = 4;
 
 # Get monotonic nanoseconds
 fn now_ns(): i64 {
-    var ts[2];
+    var ts[16];   # v6.2.13: 16-byte timespec (was [2]=2B → the Linux load64(&ts+8) read OOB)
+    #ifdef CYRIUS_TARGET_MACOS
+    # v6.2.13 (issue 2026-06-16): on the arm64 Darwin backend syscall(228) routes to
+    # libSystem `_clock_gettime_nsec_np(clock_id)`, which RETURNS ns (it does NOT fill
+    # the timespec); Darwin CLOCK_MONOTONIC is **6**. Take the return value; `&ts` is
+    # the 3rd-arg placeholder. Mirrors chrono.clock_now_ns. (x86-macho 228 unrouted → HELD.)
+    return syscall(SYS_CLOCK_GETTIME, 6, &ts);
+    #endif
+    #ifdef CYRIUS_TARGET_WIN
+    # v6.2.13: on Windows syscall(228) routes to GetTickCount64 → ms since boot in
+    # the return register (not the timespec). ×1e6 = ns.
+    return syscall(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC_RAW, &ts) * 1000000;
+    #endif
+    #ifndef CYRIUS_TARGET_MACOS
+    #ifndef CYRIUS_TARGET_WIN
     syscall(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC_RAW, &ts);
     return load64(&ts) * 1000000000 + load64(&ts + 8);
+    #endif
+    #endif
 }
 
 # Benchmark state: { name_ptr, start_ns, elapsed_ns, iterations, min_ns, max_ns }

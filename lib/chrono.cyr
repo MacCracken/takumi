@@ -18,8 +18,27 @@ fn clock_now_ns(): i64 {
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
     var ts[16];
+    #ifdef CYRIUS_TARGET_MACOS
+    # v6.2.13 (issue 2026-06-16): the **arm64** Mach-O backend routes syscall(228)
+    # to libSystem `_clock_gettime_nsec_np(clock_id)`, which RETURNS the ns count
+    # in the return register — it does NOT fill the `&ts` timespec — and Darwin's
+    # CLOCK_MONOTONIC is **6**, not Linux's 1. So take the return value (ns) with
+    # the Darwin id; `&ts` is just the 3rd-arg placeholder the route expects.
+    # (x86-macOS does not route 228 → clock stays dead there; that arch is HELD.)
+    return syscall(228, 6, &ts);
+    #endif
+    #ifdef CYRIUS_TARGET_WIN
+    # v6.2.13: on Windows syscall(228) routes to kernel32!GetTickCount64, which
+    # RETURNS ms since boot in the return register (not `&ts`). ×1e6 = ns. This is
+    # the monotonic source (uptime; never wraps in practice).
+    return syscall(228, CLOCK_MONOTONIC, &ts) * 1000000;
+    #endif
+    #ifndef CYRIUS_TARGET_MACOS
+    #ifndef CYRIUS_TARGET_WIN
     syscall(228, CLOCK_MONOTONIC, &ts);
     return load64(&ts) * 1000000000 + load64(&ts + 8);
+    #endif
+    #endif
     #endif
 }
 
@@ -39,8 +58,24 @@ fn clock_epoch_secs(): i64 {
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
     var ts[16];
+    #ifdef CYRIUS_TARGET_MACOS
+    # v6.2.13: Darwin CLOCK_REALTIME=0; _clock_gettime_nsec_np RETURNS ns since
+    # epoch → /1e9 = whole seconds (see clock_now_ns for the return-vs-buffer note).
+    return syscall(228, 0, &ts) / 1000000000;
+    #endif
+    #ifdef CYRIUS_TARGET_WIN
+    # v6.2.13: Windows has no clock_gettime — GetSystemTimeAsFileTime (PE reroute
+    # 0xF01B) fills a FILETIME (100ns ticks since 1601-01-01 UTC) at &ts; convert
+    # to Unix epoch seconds: /1e7 (100ns→s) minus the 1601→1970 gap (11644473600 s).
+    syscall(0xF01B, &ts);
+    return load64(&ts) / 10000000 - 11644473600;
+    #endif
+    #ifndef CYRIUS_TARGET_MACOS
+    #ifndef CYRIUS_TARGET_WIN
     syscall(228, CLOCK_REALTIME, &ts);
     return load64(&ts);
+    #endif
+    #endif
     #endif
 }
 
@@ -53,8 +88,23 @@ fn clock_epoch_ns(): i64 {
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
     var ts[16];
+    #ifdef CYRIUS_TARGET_MACOS
+    # v6.2.13: Darwin CLOCK_REALTIME=0; _clock_gettime_nsec_np RETURNS ns since
+    # epoch directly (see clock_now_ns for the return-vs-buffer note).
+    return syscall(228, 0, &ts);
+    #endif
+    #ifdef CYRIUS_TARGET_WIN
+    # v6.2.13: GetSystemTimeAsFileTime (0xF01B) fills a FILETIME (100ns ticks since
+    # 1601) at &ts; shift to the 1970 epoch (116444736000000000 ticks) and ×100 → ns.
+    syscall(0xF01B, &ts);
+    return (load64(&ts) - 116444736000000000) * 100;
+    #endif
+    #ifndef CYRIUS_TARGET_MACOS
+    #ifndef CYRIUS_TARGET_WIN
     syscall(228, CLOCK_REALTIME, &ts);
     return load64(&ts) * 1000000000 + load64(&ts + 8);
+    #endif
+    #endif
     #endif
 }
 
