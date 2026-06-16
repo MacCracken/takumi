@@ -23,16 +23,24 @@
 - [x] Serde roundtrip tests for all types (74 tests)
 - [x] Criterion benchmark suite (12 benchmarks)
 - [x] P(-1) scaffold hardening pass
+- [x] `.ark` package archive creation (on-disk v1 format) — reproducible,
+      DEFLATE-compressed (stdlib `sankoch`), SHA-256 root hash, ed25519
+      signing (sigil). Writer + reader in `src/ark_format.cyr`; format
+      spec in [ADR 0001](../adr/0001-ark-binary-format.md). Pulled into
+      the 0.8.x arc (0.8.2) to settle artifact integrity before the
+      pre-v1 security audit.
+- [x] Package signing infrastructure — ed25519 over the `.ark` root
+      hash, deterministic (reproducible) keys, embedded pubkey, verified
+      on read.
 
-## Backlog (0.1.x)
+## Backlog (0.9.x)
 
 - [ ] Source download with SHA-256 verification
 - [ ] Source extraction (tar.gz, tar.xz, tar.bz2)
 - [ ] Patch application
 - [ ] Build execution (shell-out to configure/make/install)
 - [ ] Fake-root installation directory management
-- [ ] `.ark` package archive creation (actual file format)
-- [ ] Package signing infrastructure
+- [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format)
 - [ ] `main.cyr` CLI entry point (replaces Rust's `main.rs`)
 - [ ] Integration tests with real recipe files
 - [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, to
@@ -43,7 +51,7 @@
       walked at its target (cycle-risk exists but is rare for real
       fake-roots)
 
-## Future (0.2+)
+## Future (post-0.9.x)
 
 - [ ] Parallel builds for independent packages
 - [ ] Build caching / ccache integration
@@ -64,5 +72,6 @@
 4. All packages are signed
 5. Build order handles the full 309-package dependency graph
 6. Documentation complete: architecture, guides, examples, ADRs
-7. Zero `cargo clippy` warnings, zero `cargo audit` advisories
+7. Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) and a
+   completed pre-v1 security audit
 8. Benchmark suite covers all hot paths

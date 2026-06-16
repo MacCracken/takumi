@@ -8,6 +8,7 @@ include "src/recipe.cyr"
 include "src/parse.cyr"
 include "src/ark.cyr"
 include "src/package.cyr"
+include "src/ark_format.cyr"
 include "src/engine.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
@@ -1270,7 +1271,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.8.1"), "builder stamp is takumi/0.8.1");
+    assert(streq(man_builder(cam_m), "takumi/0.8.2"), "builder stamp is takumi/0.8.2");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -1429,6 +1430,142 @@ fn main() {
     sys_unlink("/tmp/takumi-engine-test/world.cyml");
     sys_unlink("/tmp/takumi-engine-test/notes.txt");
     sys_rmdir(tbs_dir);
+
+    # ===================================================================
+    # .ark v1 serializer — roundtrip, determinism, tamper, edge cases.
+    # ===================================================================
+    var ark_root = "/tmp/takumi-ark-test";
+    sys_unlink("/tmp/takumi-ark-test/etc/app.conf");
+    sys_unlink("/tmp/takumi-ark-test/usr/bin/app");
+    sys_rmdir("/tmp/takumi-ark-test/etc");
+    sys_rmdir("/tmp/takumi-ark-test/usr/bin");
+    sys_rmdir("/tmp/takumi-ark-test/usr");
+    sys_rmdir(ark_root);
+    sys_unlink("/tmp/takumi-ark-1.ark");
+    sys_unlink("/tmp/takumi-ark-2.ark");
+    sys_unlink("/tmp/takumi-ark-tamper.ark");
+    sys_unlink("/tmp/takumi-ark-unsigned.ark");
+    sys_unlink("/tmp/takumi-ark-empty.ark");
+    sys_unlink("/tmp/takumi-ark-sym.ark");
+
+    assert_eq(sys_mkdir(ark_root, 0x1FF), 0, "ark: mkdir root");
+    assert_eq(sys_mkdir("/tmp/takumi-ark-test/etc", 0x1FF), 0, "ark: mkdir etc");
+    assert_eq(sys_mkdir("/tmp/takumi-ark-test/usr", 0x1FF), 0, "ark: mkdir usr");
+    assert_eq(sys_mkdir("/tmp/takumi-ark-test/usr/bin", 0x1FF), 0, "ark: mkdir usr/bin");
+    var app_conf = "port=8080\n";
+    var app_bin = "#!/bin/sh\necho hi\n";
+    assert(file_write_all("/tmp/takumi-ark-test/etc/app.conf", app_conf, strlen(app_conf)) > 0, "ark: write conf");
+    assert(file_write_all("/tmp/takumi-ark-test/usr/bin/app", app_bin, strlen(app_bin)) > 0, "ark: write bin");
+
+    var ark_entries = create_file_list(ark_root);
+    # A description that exercises escape/unescape: a quote and a newline.
+    var ark_desc = "needs \"quotes\" and\na newline";
+    var ark_groups = vec_new();
+    vec_push(ark_groups, "base");
+    vec_push(ark_groups, "net");
+    var ark_rt = vec_new();
+    vec_push(ark_rt, "libc");
+    var ark_pkg = pkg_new("myapp", "2.1.0", ark_desc, "GPL-3.0-only", ark_groups, 1, "x86_64");
+    var ark_src = src_new("https://example.com/myapp-2.1.0.tar.gz",
+                          "1111111111111111111111111111111111111111111111111111111111111111",
+                          vec_new());
+    var ark_recipe = recipe_new(ark_pkg, ark_src, dep_new(ark_rt, vec_new()),
+                                bld_new(0, "make", 0, "make install", 0, 0), sec_new(vec_new(), 0, 0));
+    var ark_man = create_ark_manifest(ark_recipe, ark_entries, "x86_64", 1700000000);
+
+    # A fixed 32-byte signing seed (deterministic key -> reproducible sig).
+    var seed = alloc(32);
+    var si = 0;
+    while (si < 32) { store8(seed + si, si); si = si + 1; }
+
+    test_group("ark_write/ark_read: signed roundtrip");
+    assert_eq(ark_write(ark_man, ark_entries, ark_root, "/tmp/takumi-ark-1.ark", seed), 0, "write signed -> 0");
+    var rapk = ark_read("/tmp/takumi-ark-1.ark", 1048576);
+    assert(rapk != 0, "read+verify (root hash + sig + per-file) -> non-zero");
+    var rman = apk_manifest(rapk);
+    assert(streq(man_name(rman), "myapp"), "name roundtrips");
+    assert(streq(man_version(rman), "2.1.0"), "version roundtrips");
+    assert(streq(man_description(rman), ark_desc), "description (quote + newline) roundtrips losslessly");
+    assert(streq(man_license(rman), "GPL-3.0-only"), "license roundtrips");
+    assert(streq(man_arch(rman), "x86_64"), "arch roundtrips");
+    assert_eq(man_release(rman), 1, "release roundtrips");
+    assert_eq(man_build_date(rman), 1700000000, "build_date roundtrips");
+    assert_eq(man_size_installed(rman), man_size_installed(ark_man), "size_installed roundtrips");
+    assert(streq(man_builder(rman), man_builder(ark_man)), "builder stamp roundtrips");
+    assert_eq(vec_len(man_groups(rman)), 2, "groups count roundtrips");
+    assert(streq(vec_get(man_groups(rman), 0), "base"), "groups[0] roundtrips");
+    assert(streq(vec_get(man_groups(rman), 1), "net"), "groups[1] roundtrips");
+    assert_eq(vec_len(man_depends(rman)), 1, "depends count roundtrips");
+    assert(streq(vec_get(man_depends(rman), 0), "libc"), "depends[0] roundtrips");
+    var rfiles = apk_files(rapk);
+    assert_eq(vec_len(rfiles), vec_len(ark_entries), "file count roundtrips");
+    var fi = 0;
+    while (fi < vec_len(ark_entries)) {
+        var oe = vec_get(ark_entries, fi);
+        var re = vec_get(rfiles, fi);
+        assert(streq(afe_path(re), afe_path(oe)), "file path roundtrips");
+        assert_eq(afe_file_type(re), afe_file_type(oe), "file type roundtrips");
+        assert_eq(afe_size(re), afe_size(oe), "file size roundtrips");
+        assert(streq(afe_sha256(re), afe_sha256(oe)), "file sha256 roundtrips");
+        fi = fi + 1;
+    }
+    assert(apk_signature(rapk) != 0, "signed package carries a signature");
+
+    test_group("ark_write: reproducible (same inputs -> identical bytes)");
+    assert_eq(ark_write(ark_man, ark_entries, ark_root, "/tmp/takumi-ark-2.ark", seed), 0, "write again -> 0");
+    var rb1 = alloc(1048576);
+    var rn1 = file_read_all("/tmp/takumi-ark-1.ark", rb1, 1048576);
+    var rb2 = alloc(1048576);
+    var rn2 = file_read_all("/tmp/takumi-ark-2.ark", rb2, 1048576);
+    assert_eq(rn1, rn2, "two builds: identical length");
+    assert_eq(memeq(rb1, rb2, rn1), 1, "two builds: byte-identical");
+
+    test_group("ark_read: tamper detection");
+    var tb = alloc(1048576);
+    var tn = file_read_all("/tmp/takumi-ark-1.ark", tb, 1048576);
+    # Flip a byte inside the manifest region (offset 20 is past the header).
+    store8(tb + 20, (load8(tb + 20) & 0xFF) ^ 0xFF);
+    assert(file_write_all("/tmp/takumi-ark-tamper.ark", tb, tn) > 0, "write tampered copy");
+    assert_eq(ark_read("/tmp/takumi-ark-tamper.ark", 1048576), 0, "tampered file -> root hash mismatch -> 0");
+
+    test_group("ark_write/ark_read: unsigned roundtrip");
+    assert_eq(ark_write(ark_man, ark_entries, ark_root, "/tmp/takumi-ark-unsigned.ark", 0), 0, "write unsigned -> 0");
+    var uapk = ark_read("/tmp/takumi-ark-unsigned.ark", 1048576);
+    assert(uapk != 0, "unsigned read+verify -> non-zero");
+    assert_eq(apk_signature(uapk), 0, "unsigned package has no signature");
+
+    test_group("ark_write/ark_read: empty package (no files)");
+    var emp_man = create_ark_manifest(ark_recipe, vec_new(), "x86_64", 1700000000);
+    assert_eq(ark_write(emp_man, vec_new(), ark_root, "/tmp/takumi-ark-empty.ark", seed), 0, "write empty -> 0");
+    var eapk = ark_read("/tmp/takumi-ark-empty.ark", 1048576);
+    assert(eapk != 0, "empty read+verify -> non-zero");
+    assert_eq(vec_len(apk_files(eapk)), 0, "empty package has 0 files");
+
+    test_group("ark_write/ark_read: symlink + directory entries");
+    var symv = vec_new();
+    vec_push(symv, afe_directory("/opt"));
+    vec_push(symv, afe_symlink("/opt/current", "/opt/v1"));
+    assert_eq(ark_write(ark_man, symv, ark_root, "/tmp/takumi-ark-sym.ark", 0), 0, "write symlink pkg -> 0");
+    var sapk = ark_read("/tmp/takumi-ark-sym.ark", 1048576);
+    assert(sapk != 0, "symlink read+verify -> non-zero");
+    var sfiles = apk_files(sapk);
+    assert_eq(vec_len(sfiles), 2, "symlink pkg has 2 entries");
+    assert_eq(afe_file_type(vec_get(sfiles, 1)), ARK_FT_SYMLINK, "entry[1] is SYMLINK");
+    assert(streq(afe_symlink_target(vec_get(sfiles, 1)), "/opt/v1"), "symlink target roundtrips");
+
+    # Cleanup
+    sys_unlink("/tmp/takumi-ark-test/etc/app.conf");
+    sys_unlink("/tmp/takumi-ark-test/usr/bin/app");
+    sys_rmdir("/tmp/takumi-ark-test/etc");
+    sys_rmdir("/tmp/takumi-ark-test/usr/bin");
+    sys_rmdir("/tmp/takumi-ark-test/usr");
+    sys_rmdir(ark_root);
+    sys_unlink("/tmp/takumi-ark-1.ark");
+    sys_unlink("/tmp/takumi-ark-2.ark");
+    sys_unlink("/tmp/takumi-ark-tamper.ark");
+    sys_unlink("/tmp/takumi-ark-unsigned.ark");
+    sys_unlink("/tmp/takumi-ark-empty.ark");
+    sys_unlink("/tmp/takumi-ark-sym.ark");
 
     return assert_summary();
 }

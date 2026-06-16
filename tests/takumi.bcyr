@@ -20,6 +20,7 @@ include "src/recipe.cyr"
 include "src/parse.cyr"
 include "src/ark.cyr"
 include "src/package.cyr"
+include "src/ark_format.cyr"
 include "src/engine.cyr"
 
 # ---------------------------------------------------------------------------
@@ -402,6 +403,35 @@ fn bench_sha256_1mb() {
     return 0;
 }
 
+# Serialize the 26-file fixture to a signed .ark (read payloads + deflate
+# + SHA-256 root + ed25519 sign + single write) — the full write path.
+fn bench_ark_write() {
+    _fl_build();
+    var entries = create_file_list("/tmp/takumi-bench-filelist");
+    var pkg = pkg_new("benchpkg", "1.0.0", "bench fixture", "GPL-3.0-only", vec_new(), 1, "x86_64");
+    var src = src_new("https://example.com/benchpkg-1.0.0.tar.gz",
+                      "2222222222222222222222222222222222222222222222222222222222222222",
+                      vec_new());
+    var recipe = recipe_new(pkg, src, dep_new(vec_new(), vec_new()),
+                            bld_new(0, "make", 0, "make install", 0, 0), sec_new(vec_new(), 0, 0));
+    var man = create_ark_manifest(recipe, entries, "x86_64", 1700000000);
+    var seed = alloc(32);
+    var s = 0;
+    while (s < 32) { store8(seed + s, s); s = s + 1; }
+    var b = bench_new("ark_write_26_files_signed");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100) {
+        ark_write(man, entries, "/tmp/takumi-bench-filelist", "/tmp/takumi-bench.ark", seed);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100);
+    bench_report(b);
+    sys_unlink("/tmp/takumi-bench.ark");
+    _fl_tear_down();
+    return 0;
+}
+
 fn main() {
     alloc_init();
     bench_parse_minimal();
@@ -413,6 +443,7 @@ fn main() {
     bench_topo_100();
     bench_topo_300();
     bench_create_file_list();
+    bench_ark_write();
     bench_sha256_1kb();
     bench_sha256_1mb();
     return 0;

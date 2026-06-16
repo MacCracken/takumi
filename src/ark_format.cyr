@@ -1,0 +1,556 @@
+# takumi — .ark v1 on-disk serializer (writer + reader).
+#
+# Turns the in-memory ArkManifest + ArkFileEntry list (src/ark.cyr,
+# built by src/package.cyr) into a reproducible, signed `.ark` file,
+# and reads one back. ark will consume this format; until ark grows a
+# reader, the roundtrip+determinism tests in tests/takumi.tcyr are the
+# conformance harness. See docs/adr/0001-ark-binary-format.md.
+#
+# Layout (little-endian; strings are u32-len + raw bytes, no NUL on
+# disk; hashes/keys/sigs are raw bytes 32/32/64):
+#
+#   HEADER (16B): 0x89 'A' 'R' 'K' | u16 version | u16 flags
+#                 | u8 compress_algo | u8 compress_level
+#                 | u8 hash_algo | u8 sig_algo | u32 reserved
+#   MANIFEST:     u32 len | TOML text ([[manifest]] table, escaped)
+#   FILE-INDEX:   u32 count | entries (sorted by path):
+#                   u8 file_type | u8 eflags(bit0 has_sha,bit1 has_target)
+#                   | u32 path_len | path | u64 size
+#                   | [32B sha256 if has_sha] | [u32 tlen | target if has_target]
+#                   | u64 data_offset
+#   DATA:         u64 uncompressed_len U | u64 compressed_len C | C deflate bytes
+#                   (REGULAR/CONFIG payloads concatenated in index order;
+#                    U==0 => C==0, no stream)
+#   TRAILER:      32B root_hash = SHA-256(bytes [0, R)) | u8 has_sig
+#                   | [32B pubkey | 64B ed25519(sig over root_hash) if signed]
+#
+# Manifest TOML escaping is symmetric and self-contained: ark_write
+# escapes (\, ", newline, tab, CR), ark_read un-escapes. bayan's
+# toml_parse delimits escaped strings correctly but does NOT un-escape,
+# so we never rely on it to (verified against bayan 2.3.1).
+
+# --- format constants -------------------------------------------------
+
+enum ArkFmt {
+    ARK_FORMAT_VERSION = 1;
+    ARK_FLAG_SIGNED = 1;
+    ARK_FLAG_COMPRESSED = 2;
+    ARK_ALGO_DEFLATE = 1;
+    ARK_ALGO_SHA256 = 1;
+    ARK_ALGO_ED25519 = 1;
+    # Pinned deflate level — recorded in the header and asserted on
+    # read. Levels >= 4 use dynamic Huffman; pinning the level (and the
+    # single-threaded sankoch codec version) keeps output byte-identical.
+    ARK_COMPRESS_LEVEL = 6;
+    ARK_HEADER_LEN = 16;
+}
+
+# --- little-endian writers (append to a str_builder) ------------------
+
+fn _put_u8(sb, v) { str_builder_add_byte(sb, v & 0xFF); return 0; }
+fn _put_u16(sb, v) { _put_u8(sb, v); _put_u8(sb, v >> 8); return 0; }
+fn _put_u32(sb, v) { _put_u16(sb, v); _put_u16(sb, v >> 16); return 0; }
+fn _put_u64(sb, v) { _put_u32(sb, v); _put_u32(sb, v >> 32); return 0; }
+
+# Bulk raw-byte append — mirrors str_builder_add_cstr but takes an
+# explicit length so it is NUL-safe (binary payloads contain zeros).
+fn _sb_add_raw(sb, ptr, len) {
+    if (len <= 0) { return 0; }
+    if (_sb_grow(sb, len) != 0) {
+        syscall(1, 2, "ark: str_builder grow failed\n", 30);
+        _sb_die();
+    }
+    var buf = load64(sb);
+    var l = load64(sb + 8);
+    memcpy(buf + l, ptr, len);
+    store64(sb + 8, l + len);
+    return 0;
+}
+
+# u32-len-prefixed string field (cstr in, no NUL on disk).
+fn _put_str(sb, cstr) {
+    var n = 0;
+    if (cstr != 0) { n = strlen(cstr); }
+    _put_u32(sb, n);
+    _sb_add_raw(sb, cstr, n);
+    return 0;
+}
+
+# --- little-endian readers (over a raw byte buffer) -------------------
+
+fn _get_u8(buf, off) { return load8(buf + off) & 0xFF; }
+fn _get_u16(buf, off) { return _get_u8(buf, off) | (_get_u8(buf, off + 1) << 8); }
+fn _get_u32(buf, off) { return _get_u16(buf, off) | (_get_u16(buf, off + 2) << 16); }
+fn _get_u64(buf, off) { return _get_u32(buf, off) | (_get_u32(buf, off + 4) << 32); }
+
+# --- canonical manifest TOML serialization ----------------------------
+
+# Append `cstr` with TOML basic-string escaping (no surrounding quotes).
+fn _toml_escape_into(sb, cstr) {
+    if (cstr == 0) { return 0; }
+    var n = strlen(cstr);
+    var i = 0;
+    while (i < n) {
+        var c = load8(cstr + i) & 0xFF;
+        if (c == 92) { _put_u8(sb, 92); _put_u8(sb, 92); }
+        else { if (c == 34) { _put_u8(sb, 92); _put_u8(sb, 34); }
+        else { if (c == 10) { _put_u8(sb, 92); _put_u8(sb, 110); }
+        else { if (c == 9) { _put_u8(sb, 92); _put_u8(sb, 116); }
+        else { if (c == 13) { _put_u8(sb, 92); _put_u8(sb, 114); }
+        else { _put_u8(sb, c); } } } } }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _toml_kv_str(sb, key, cstr) {
+    str_builder_add_cstr(sb, key);
+    str_builder_add_cstr(sb, " = \"");
+    _toml_escape_into(sb, cstr);
+    str_builder_add_cstr(sb, "\"\n");
+    return 0;
+}
+
+fn _toml_kv_int(sb, key, n) {
+    str_builder_add_cstr(sb, key);
+    str_builder_add_cstr(sb, " = ");
+    str_builder_add_int(sb, n);
+    _put_u8(sb, 10);
+    return 0;
+}
+
+# Inline array of escaped basic strings: key = ["a", "b"]. Preserves
+# the vec's order (recipe order); 0/empty vec -> [].
+fn _toml_kv_arr(sb, key, vec) {
+    str_builder_add_cstr(sb, key);
+    str_builder_add_cstr(sb, " = [");
+    var n = 0;
+    if (vec != 0) { n = vec_len(vec); }
+    var i = 0;
+    while (i < n) {
+        if (i > 0) { str_builder_add_cstr(sb, ", "); }
+        _put_u8(sb, 34);
+        _toml_escape_into(sb, vec_get(vec, i));
+        _put_u8(sb, 34);
+        i = i + 1;
+    }
+    str_builder_add_cstr(sb, "]\n");
+    return 0;
+}
+
+# Serialize an ArkManifest to canonical TOML text (field order == the
+# ManOff struct order, so output is stable).
+fn _man_to_toml(m) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "[[manifest]]\n");
+    _toml_kv_str(sb, "name", man_name(m));
+    _toml_kv_str(sb, "version", man_version(m));
+    _toml_kv_int(sb, "release", man_release(m));
+    _toml_kv_str(sb, "description", man_description(m));
+    _toml_kv_str(sb, "arch", man_arch(m));
+    _toml_kv_int(sb, "size_installed", man_size_installed(m));
+    _toml_kv_int(sb, "build_date", man_build_date(m));
+    _toml_kv_str(sb, "builder", man_builder(m));
+    _toml_kv_str(sb, "source_url", man_source_url(m));
+    _toml_kv_str(sb, "source_hash", man_source_hash(m));
+    _toml_kv_str(sb, "license", man_license(m));
+    _toml_kv_arr(sb, "groups", man_groups(m));
+    _toml_kv_arr(sb, "depends", man_depends(m));
+    return str_builder_build(sb);
+}
+
+# --- manifest TOML un-escape (read side) ------------------------------
+
+# Reverse _toml_escape_into. Returns a fresh NUL-terminated cstr.
+fn _unescape_bytes(data, n) {
+    var buf = alloc(n + 1);
+    var o = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(data + i) & 0xFF;
+        if (c == 92) {
+            if (i + 1 < n) {
+                var d = load8(data + i + 1) & 0xFF;
+                if (d == 92) { store8(buf + o, 92); o = o + 1; i = i + 2; }
+                else { if (d == 34) { store8(buf + o, 34); o = o + 1; i = i + 2; }
+                else { if (d == 110) { store8(buf + o, 10); o = o + 1; i = i + 2; }
+                else { if (d == 116) { store8(buf + o, 9); o = o + 1; i = i + 2; }
+                else { if (d == 114) { store8(buf + o, 13); o = o + 1; i = i + 2; }
+                else { store8(buf + o, c); o = o + 1; i = i + 1; } } } } }
+            } else {
+                store8(buf + o, c); o = o + 1; i = i + 1;
+            }
+        } else {
+            store8(buf + o, c); o = o + 1; i = i + 1;
+        }
+    }
+    store8(buf + o, 0);
+    return buf;
+}
+
+fn _toml_unescape(s) { return _unescape_bytes(str_data(s), str_len(s)); }
+fn _toml_unescape_cstr(c) { return _unescape_bytes(c, strlen(c)); }
+
+# toml_get + un-escape -> fresh cstr, or 0 if key absent.
+fn _man_get_str(pairs, key) {
+    var s = toml_get(pairs, key);
+    if (s == 0) { return 0; }
+    return _toml_unescape(s);
+}
+
+# Parse + un-escape an inline string array into a vec of cstr. Package
+# names carry no escapes in practice, but we un-escape for symmetry.
+fn _man_get_arr(pairs, key) {
+    var s = toml_get(pairs, key);
+    if (s == 0) { return vec_new(); }
+    var raw = _parse_array_cstrs(s);
+    var out = vec_new();
+    var i = 0;
+    var n = vec_len(raw);
+    while (i < n) {
+        vec_push(out, _toml_unescape_cstr(vec_get(raw, i)));
+        i = i + 1;
+    }
+    return out;
+}
+
+fn _man_from_pairs(pairs) {
+    var m = man_alloc();
+    man_set_name(m, _man_get_str(pairs, "name"));
+    man_set_version(m, _man_get_str(pairs, "version"));
+    man_set_release(m, _get_int(pairs, "release", 1));
+    man_set_description(m, _man_get_str(pairs, "description"));
+    man_set_arch(m, _man_get_str(pairs, "arch"));
+    man_set_size_installed(m, _get_int(pairs, "size_installed", 0));
+    man_set_build_date(m, _get_int(pairs, "build_date", 0));
+    man_set_builder(m, _man_get_str(pairs, "builder"));
+    man_set_source_url(m, _man_get_str(pairs, "source_url"));
+    man_set_source_hash(m, _man_get_str(pairs, "source_hash"));
+    man_set_license(m, _man_get_str(pairs, "license"));
+    man_set_groups(m, _man_get_arr(pairs, "groups"));
+    man_set_depends(m, _man_get_arr(pairs, "depends"));
+    return m;
+}
+
+# --- payload helpers --------------------------------------------------
+
+# Whether an entry contributes payload bytes / carries a content hash.
+fn _afe_has_payload(e) {
+    var t = afe_file_type(e);
+    if (t == ARK_FT_REGULAR) { return 1; }
+    if (t == ARK_FT_CONFIG) { return 1; }
+    return 0;
+}
+
+# Concatenate package_dir + path into a fresh cstr (path has a leading
+# slash, so the result is a normal absolute path under the fake-root).
+fn _join_cstr(dir_cstr, path_cstr) {
+    var la = strlen(dir_cstr);
+    var lb = strlen(path_cstr);
+    var buf = alloc(la + lb + 1);
+    memcpy(buf, dir_cstr, la);
+    memcpy(buf + la, path_cstr, lb);
+    store8(buf + la + lb, 0);
+    return buf;
+}
+
+# Read exactly `expect_len` bytes of `full_cstr` into `dst`. Returns
+# bytes read (== expect_len on success) or -1 on open failure.
+fn _read_file_into(full_cstr, dst, expect_len) {
+    var fd = file_open(full_cstr, 0, 0);
+    if (fd < 0) { return 0 - 1; }
+    var got = 0;
+    var n = file_read(fd, dst + got, expect_len - got);
+    while (n > 0) {
+        got = got + n;
+        if (got >= expect_len) { break; }
+        n = file_read(fd, dst + got, expect_len - got);
+    }
+    file_close(fd);
+    return got;
+}
+
+# --- writer -----------------------------------------------------------
+
+# Serialize a package to `out_path_cstr`. `entries` is the sorted
+# ArkFileEntry vec; payloads are read from `package_dir_cstr` (the
+# fake-root). `signing_seed` is a 32-byte seed buffer, or 0 to write
+# an unsigned package. Returns 0 on success, negative on error:
+#   -1 payload read failed   -2 compression failed   -3 file write failed
+fn ark_write(manifest, entries, package_dir_cstr, out_path_cstr, signing_seed) {
+    var count = vec_len(entries);
+
+    # 1. Uncompressed data stream: sum payload sizes, then read each.
+    var u_len = 0;
+    var i = 0;
+    while (i < count) {
+        var e = vec_get(entries, i);
+        if (_afe_has_payload(e) == 1) { u_len = u_len + afe_size(e); }
+        i = i + 1;
+    }
+    var u_buf = 0;
+    if (u_len > 0) { u_buf = alloc(u_len); }
+    var data_off = alloc(count * 8 + 8);
+    var cursor = 0;
+    i = 0;
+    while (i < count) {
+        var e2 = vec_get(entries, i);
+        store64(data_off + i * 8, cursor);
+        if (_afe_has_payload(e2) == 1) {
+            var sz = afe_size(e2);
+            if (sz > 0) {
+                var full = _join_cstr(package_dir_cstr, afe_path(e2));
+                var got = _read_file_into(full, u_buf + cursor, sz);
+                if (got != sz) { return 0 - 1; }
+                cursor = cursor + sz;
+            }
+        }
+        i = i + 1;
+    }
+
+    # 2. Compress (pinned level). U==0 => empty stream, no codec call.
+    var c_len = 0;
+    var c_buf = 0;
+    if (u_len > 0) {
+        var cap = u_len + u_len / 1000 + 128;
+        c_buf = alloc(cap);
+        c_len = deflate_compress_level(u_buf, u_len, c_buf, cap, ARK_COMPRESS_LEVEL);
+        if (c_len < 0) {
+            var cap2 = u_len * 2 + 1024;
+            c_buf = alloc(cap2);
+            c_len = deflate_compress_level(u_buf, u_len, c_buf, cap2, ARK_COMPRESS_LEVEL);
+            if (c_len < 0) { return 0 - 2; }
+        }
+    }
+
+    # 3. Assemble header..data into one buffer.
+    var signed = 0;
+    if (signing_seed != 0) { signed = 1; }
+    var f = str_builder_new();
+    _put_u8(f, 0x89); _put_u8(f, 65); _put_u8(f, 82); _put_u8(f, 75);
+    _put_u16(f, ARK_FORMAT_VERSION);
+    var flags = ARK_FLAG_COMPRESSED;
+    if (signed == 1) { flags = flags | ARK_FLAG_SIGNED; }
+    _put_u16(f, flags);
+    _put_u8(f, ARK_ALGO_DEFLATE);
+    _put_u8(f, ARK_COMPRESS_LEVEL);
+    _put_u8(f, ARK_ALGO_SHA256);
+    var sig_algo = 0;
+    if (signed == 1) { sig_algo = ARK_ALGO_ED25519; }
+    _put_u8(f, sig_algo);
+    _put_u32(f, 0);
+
+    var toml = _man_to_toml(manifest);
+    _put_u32(f, str_len(toml));
+    _sb_add_raw(f, str_data(toml), str_len(toml));
+
+    _put_u32(f, count);
+    i = 0;
+    while (i < count) {
+        var e3 = vec_get(entries, i);
+        var t = afe_file_type(e3);
+        _put_u8(f, t);
+        var has_sha = 0;
+        if (_afe_has_payload(e3) == 1) {
+            var h = afe_sha256(e3);
+            if (h != 0) { if (strlen(h) == 64) { has_sha = 1; } }
+        }
+        var has_target = 0;
+        if (t == ARK_FT_SYMLINK) {
+            if (afe_symlink_target(e3) != 0) { has_target = 1; }
+        }
+        var eflags = 0;
+        if (has_sha == 1) { eflags = eflags | 1; }
+        if (has_target == 1) { eflags = eflags | 2; }
+        _put_u8(f, eflags);
+        _put_str(f, afe_path(e3));
+        _put_u64(f, afe_size(e3));
+        if (has_sha == 1) {
+            var raw = alloc(32);
+            hex_decode_into(afe_sha256(e3), 64, raw);
+            _sb_add_raw(f, raw, 32);
+        }
+        if (has_target == 1) {
+            _put_str(f, afe_symlink_target(e3));
+        }
+        _put_u64(f, load64(data_off + i * 8));
+        i = i + 1;
+    }
+
+    _put_u64(f, u_len);
+    _put_u64(f, c_len);
+    if (c_len > 0) { _sb_add_raw(f, c_buf, c_len); }
+
+    # 4. Root hash over everything written so far [0, R).
+    var prefix = load64(f);
+    var prefix_len = load64(f + 8);
+    sha256_global_init();
+    var ctx = sha256_init();
+    sha256_update(ctx, prefix, prefix_len);
+    var root = alloc(32);
+    sha256_finalize(ctx, root);
+    fl_free(ctx);
+    _sb_add_raw(f, root, 32);
+
+    # 5. Signature trailer (deterministic ed25519 over the root hash).
+    if (signed == 1) {
+        _put_u8(f, 1);
+        var sk = alloc(64);
+        var pk = alloc(32);
+        ed25519_keypair(signing_seed, sk, pk);
+        _sb_add_raw(f, pk, 32);
+        var sig = alloc(64);
+        ed25519_sign(sk, root, 32, sig);
+        _sb_add_raw(f, sig, 64);
+    } else {
+        _put_u8(f, 0);
+    }
+
+    # 6. One write.
+    var out = load64(f);
+    var total = load64(f + 8);
+    var w = file_write_all(out_path_cstr, out, total);
+    if (w != total) { return 0 - 3; }
+    return 0;
+}
+
+# --- reader (roundtrip/verification harness) --------------------------
+
+# Read + fully verify a `.ark` file. Returns an ArkPackage on success,
+# or 0 if the file is malformed, the root hash mismatches, the
+# signature fails, or any per-file hash mismatches. `max_len` caps the
+# read (whole file is buffered in memory — see the ADR's size note).
+fn ark_read(path_cstr, max_len) {
+    var buf = alloc(max_len);
+    var flen = file_read_all(path_cstr, buf, max_len);
+    if (flen < ARK_HEADER_LEN) { return 0; }
+
+    # Header.
+    if (_get_u8(buf, 0) != 0x89) { return 0; }
+    if (_get_u8(buf, 1) != 65) { return 0; }
+    if (_get_u8(buf, 2) != 82) { return 0; }
+    if (_get_u8(buf, 3) != 75) { return 0; }
+    if (_get_u16(buf, 4) != ARK_FORMAT_VERSION) { return 0; }
+    var flags = _get_u16(buf, 6);
+    var signed = flags & ARK_FLAG_SIGNED;
+    var compressed = flags & ARK_FLAG_COMPRESSED;
+
+    # Trailer geometry: [root 32][has_sig 1][pubkey 32][sig 64]?
+    var trailer = 32 + 1;
+    if (signed != 0) { trailer = trailer + 96; }
+    var r = flen - trailer;
+    if (r < ARK_HEADER_LEN) { return 0; }
+
+    # Verify root hash over [0, R).
+    sha256_global_init();
+    var ctx = sha256_init();
+    sha256_update(ctx, buf, r);
+    var calc = alloc(32);
+    sha256_finalize(ctx, calc);
+    fl_free(ctx);
+    if (memeq(calc, buf + r, 32) != 1) { return 0; }
+
+    # Verify signature over the root hash.
+    var sig_hex = 0;
+    if (signed != 0) {
+        var pk = buf + r + 33;
+        var sig = buf + r + 33 + 32;
+        if (ed25519_verify(pk, buf + r, 32, sig) != 1) { return 0; }
+        sig_hex = hex_encode(sig, 64);
+    }
+
+    # Manifest.
+    var off = ARK_HEADER_LEN;
+    var mlen = _get_u32(buf, off);
+    off = off + 4;
+    var mstr = str_new(buf + off, mlen);
+    off = off + mlen;
+    var sections = toml_parse(mstr);
+    var pairs = _find_section(sections, "manifest");
+    if (pairs == 0) { return 0; }
+    var manifest = _man_from_pairs(pairs);
+
+    # File index.
+    var count = _get_u32(buf, off);
+    off = off + 4;
+    var entries = vec_new();
+    var i = 0;
+    while (i < count) {
+        var ft = _get_u8(buf, off); off = off + 1;
+        var eflags = _get_u8(buf, off); off = off + 1;
+        var plen = _get_u32(buf, off); off = off + 4;
+        var path = alloc(plen + 1);
+        memcpy(path, buf + off, plen);
+        store8(path + plen, 0);
+        off = off + plen;
+        var size = _get_u64(buf, off); off = off + 8;
+        var sha_hex = "";
+        if ((eflags & 1) != 0) {
+            sha_hex = hex_encode(buf + off, 32);
+            off = off + 32;
+        }
+        var target = 0;
+        if ((eflags & 2) != 0) {
+            var tlen = _get_u32(buf, off); off = off + 4;
+            target = alloc(tlen + 1);
+            memcpy(target, buf + off, tlen);
+            store8(target + tlen, 0);
+            off = off + tlen;
+        }
+        var doff = _get_u64(buf, off); off = off + 8;
+        vec_push(entries, afe_new(path, sha_hex, size, ft, target));
+        i = i + 1;
+    }
+
+    # Data block.
+    var u_len = _get_u64(buf, off); off = off + 8;
+    var c_len = _get_u64(buf, off); off = off + 8;
+    var data = 0;
+    if (u_len > 0) {
+        data = alloc(u_len);
+        if (compressed != 0) {
+            var n = deflate_decompress(buf + off, c_len, data, u_len);
+            if (n != u_len) { return 0; }
+        } else {
+            memcpy(data, buf + off, u_len);
+        }
+    }
+
+    # Re-verify each payload's content hash against the index.
+    i = 0;
+    var cursor = 0;
+    while (i < count) {
+        var e = vec_get(entries, i);
+        if (_afe_has_payload(e) == 1) {
+            var sz = afe_size(e);
+            var hh = afe_sha256(e);
+            if (hh != 0) {
+                if (strlen(hh) == 64) {
+                    sha256_global_init();
+                    var c2 = sha256_init();
+                    sha256_update(c2, data + cursor, sz);
+                    var dg = alloc(32);
+                    sha256_finalize(c2, dg);
+                    fl_free(c2);
+                    var want = alloc(32);
+                    hex_decode_into(hh, 64, want);
+                    if (memeq(dg, want, 32) != 1) { return 0; }
+                }
+            }
+            cursor = cursor + sz;
+        }
+        i = i + 1;
+    }
+
+    var data_hash = "";
+    if (u_len > 0) {
+        sha256_global_init();
+        var c3 = sha256_init();
+        sha256_update(c3, data, u_len);
+        var dh = alloc(32);
+        sha256_finalize(c3, dh);
+        fl_free(c3);
+        data_hash = hex_encode(dh, 32);
+    }
+    return apk_new(manifest, sig_hex, entries, data_hash);
+}

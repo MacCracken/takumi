@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.2] - 2026-06-16
+
+The `.ark` on-disk package format — pulled from the 0.9.x roadmap into the
+0.8.x arc to settle artifact integrity before the pre-v1 security audit.
+takumi can now serialize a built package to a reproducible, compressed,
+signed `.ark` file (and read one back to verify it). 603 tests (was 543),
+all passing.
+
+### Added
+
+- **`.ark` v1 writer + reader** (`src/ark_format.cyr`):
+  `ark_write(manifest, entries, fake_root, out_path, signing_seed)` and
+  `ark_read(path, max_len)`. Format: little-endian header (magic + version
+  + flags), TOML-text manifest, uncompressed file index, DEFLATE data
+  section, SHA-256 root hash, trailing ed25519 signature. Specified in
+  [ADR 0001](docs/adr/0001-ark-binary-format.md).
+- **Manifest embedded as TOML**, parsed back via stdlib `bayan`. Symmetric,
+  self-contained escaping (`\`, `"`, newline, tab, CR) — takumi escapes on
+  write and un-escapes on read (bayan delimits but does not un-escape).
+- **Data-section compression** via stdlib `sankoch` DEFLATE at a pinned
+  level (6), recorded in the header and asserted on read. Manifest + index
+  stay uncompressed so a reader gets metadata without inflating payloads.
+- **Package signing** via sigil 3.8.0 ed25519: the SHA-256 root hash is
+  signed with a deterministic key; the public key is embedded and verified
+  on read.
+- **Integrity verification on read**: `ark_read` recomputes the root hash,
+  verifies the signature, and re-checks every per-file SHA-256; any
+  mismatch returns failure.
+- Tests: signed/unsigned roundtrip, byte-for-byte reproducibility
+  (same inputs built twice → identical bytes), tamper detection, empty
+  package, and symlink/directory entries.
+- Benchmark `ark_write_26_files_signed`: **2.71 ms** for the 26-file
+  fixture (read payloads + DEFLATE + SHA-256 root + ed25519 sign + write),
+  measured alongside `create_file_list_26_files` (422 µs) and `sha256_1mb`
+  (3.13 ms).
+- `docs/adr/` tree established, starting with ADR 0001 (`.ark` format).
+
+### Changed
+
+- `[deps] stdlib` gains `sankoch` (DEFLATE) and `sync` (its mutex
+  dependency). Both vendored from the 6.2.12 snapshot.
+- Builder stamp → `takumi/0.8.2`; `main` documented; reproducibility now
+  depends on the pinned `sankoch`/`sigil` versions (`cyrius.lock`).
+- Roadmap: `.ark` archive creation and package signing moved to Completed;
+  backlog re-labelled 0.9.x; v1.0 criterion #7 updated from the Rust-era
+  `cargo clippy`/`cargo audit` wording to the Cyrius gates + security audit.
+
 ## [0.8.1] - 2026-06-16
 
 Toolchain and dependency refresh. No source-level behavior change —

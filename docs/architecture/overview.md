@@ -53,8 +53,21 @@ logical sections:
 2. Validate: BuildRecipe -> Result<warnings> (reject malformed early)
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
 4. Build:    (not yet implemented) download, extract, configure, make, install
-5. Package:  installed files -> ArkManifest + ArkFileEntry list -> .ark
+5. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr)
+             -> serialized .ark v1 (src/ark_format.cyr): TOML manifest +
+                file index + DEFLATE data + SHA-256 root + ed25519 signature
 ```
+
+### `.ark` serialization (`src/ark_format.cyr`)
+
+`ark_write(manifest, entries, fake_root, out_path, signing_seed)` produces a
+reproducible, signed `.ark` v1 file; `ark_read(path, max_len)` reads and fully
+verifies one (root hash, signature, every per-file hash) and is the conformance
+harness until ark grows its own reader. The on-disk format — a little-endian
+header, TOML-text manifest (parsed back via `bayan`), uncompressed file index,
+DEFLATE-compressed data section (stdlib `sankoch`, pinned level), SHA-256 root
+hash, and trailing ed25519 signature (sigil) — is specified in
+[ADR 0001](../adr/0001-ark-binary-format.md).
 
 ## Key Algorithms
 
