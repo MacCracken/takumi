@@ -9,6 +9,7 @@ include "src/parse.cyr"
 include "src/ark.cyr"
 include "src/package.cyr"
 include "src/ark_format.cyr"
+include "src/source.cyr"
 include "src/engine.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
@@ -56,6 +57,99 @@ fn _valid_recipe() {
 
 fn _has_error(v, msg) { return cstr_vec_contains(val_errors(v), msg); }
 fn _has_warning(v, msg) { return cstr_vec_contains(val_warnings(v), msg); }
+
+# ---- tar fixture builders (for src/source.cyr extractor tests) --------
+# Build ustar archives by hand in memory (no shell dependency), mirroring
+# how the CYML fixtures are assembled with str_builder.
+
+# A fresh zeroed 512-byte tar header block (bump alloc is zeroed).
+fn _tb_block() { return alloc(512); }
+
+fn _tb_put(block, off, cstr) {
+    memcpy(block + off, cstr, strlen(cstr));
+    return 0;
+}
+
+# size field (124,12): 11 octal digits + NUL.
+fn _tb_put_size(block, size) {
+    var i = 10;
+    var v = size;
+    while (i >= 0) {
+        store8(block + 124 + i, 48 + (v & 7));
+        v = v / 8;
+        i = i - 1;
+    }
+    store8(block + 135, 0);
+    return 0;
+}
+
+# ustar magic/version + correct header checksum (must be last).
+fn _tb_finalize(block) {
+    _tb_put(block, 257, "ustar");
+    store8(block + 263, 48);
+    store8(block + 264, 48);
+    var i = 148;
+    while (i < 156) { store8(block + i, 32); i = i + 1; }
+    var sum = 0;
+    i = 0;
+    while (i < 512) { sum = sum + (load8(block + i) & 0xFF); i = i + 1; }
+    var j = 5;
+    var v = sum;
+    while (j >= 0) {
+        store8(block + 148 + j, 48 + (v & 7));
+        v = v / 8;
+        j = j - 1;
+    }
+    store8(block + 154, 0);
+    store8(block + 155, 32);
+    return 0;
+}
+
+# Append a raw byte range to a str_builder (reuses ark_format's helper).
+fn _tb_app(sb, ptr, len) { return _sb_add_raw(sb, ptr, len); }
+
+# Append a header + its (512-padded) data payload to the archive builder.
+fn _tb_emit_file(sb, name, typeflag, size, data) {
+    var b = _tb_block();
+    _tb_put(b, 0, name);
+    store8(b + 156, typeflag);
+    _tb_put_size(b, size);
+    _tb_finalize(b);
+    _tb_app(sb, b, 512);
+    if (size > 0) {
+        _tb_app(sb, data, size);
+        var pad = ((size + 511) / 512) * 512 - size;
+        if (pad > 0) {
+            var z = alloc(pad);
+            _tb_app(sb, z, pad);
+        }
+    }
+    return 0;
+}
+
+# Append a symlink header (linkname at 157,100).
+fn _tb_emit_symlink(sb, name, target) {
+    var b = _tb_block();
+    _tb_put(b, 0, name);
+    store8(b + 156, 50);
+    _tb_put(b, 157, target);
+    _tb_finalize(b);
+    _tb_app(sb, b, 512);
+    return 0;
+}
+
+# Two zero blocks = end-of-archive terminator.
+fn _tb_terminator(sb) {
+    var z = alloc(1024);
+    _tb_app(sb, z, 1024);
+    return 0;
+}
+
+# Write the assembled archive to a scratch path. Returns 0/neg.
+fn _tb_write(sb, path) {
+    var s = str_builder_build(sb);
+    return file_write_all(path, str_data(s), str_len(s));
+}
 
 fn main() {
     alloc_init();
@@ -1232,6 +1326,47 @@ fn main() {
     var no_listing = create_file_list("/tmp/takumi-does-not-exist-b6b");
     assert_eq(vec_len(no_listing), 0, "missing root -> 0 entries");
 
+    test_group("create_file_list: symlink classification (lstat-first, no follow)");
+    # Tree: data/ (real dir), data/real.txt (file), link-to-file -> data/real.txt,
+    #       link-to-dir -> data.  A symlinked dir must NOT be recursed.
+    var sl_root = "/tmp/takumi-symlink-test";
+    sys_unlink("/tmp/takumi-symlink-test/link-to-file");
+    sys_unlink("/tmp/takumi-symlink-test/link-to-dir");
+    sys_unlink("/tmp/takumi-symlink-test/data/real.txt");
+    sys_rmdir("/tmp/takumi-symlink-test/data");
+    sys_rmdir(sl_root);
+    assert_eq(sys_mkdir(sl_root, 0x1FF), 0, "sym: mkdir root");
+    assert_eq(sys_mkdir("/tmp/takumi-symlink-test/data", 0x1FF), 0, "sym: mkdir data");
+    var rtxt = "real\n";
+    assert(file_write_all("/tmp/takumi-symlink-test/data/real.txt", rtxt, strlen(rtxt)) > 0, "sym: write real.txt");
+    # sys_symlink(target, linkpath) — relative targets so readlink returns them verbatim.
+    assert_eq(sys_symlink("data/real.txt", "/tmp/takumi-symlink-test/link-to-file"), 0, "sym: link-to-file");
+    assert_eq(sys_symlink("data", "/tmp/takumi-symlink-test/link-to-dir"), 0, "sym: link-to-dir");
+
+    var sl = create_file_list(sl_root);
+    # Sorted: /data, /data/real.txt, /link-to-dir, /link-to-file. If link-to-dir
+    # were followed we'd also see /link-to-dir/real.txt -> count would exceed 4.
+    assert_eq(vec_len(sl), 4, "4 entries (symlinked dir not recursed)");
+    assert(streq(afe_path(vec_get(sl, 0)), "/data"), "[0] /data");
+    assert_eq(afe_file_type(vec_get(sl, 0)), ARK_FT_DIRECTORY, "[0] DIRECTORY");
+    assert(streq(afe_path(vec_get(sl, 1)), "/data/real.txt"), "[1] /data/real.txt");
+    assert_eq(afe_file_type(vec_get(sl, 1)), ARK_FT_REGULAR, "[1] REGULAR");
+    assert(streq(afe_path(vec_get(sl, 2)), "/link-to-dir"), "[2] /link-to-dir");
+    assert_eq(afe_file_type(vec_get(sl, 2)), ARK_FT_SYMLINK, "[2] SYMLINK (not followed)");
+    assert(streq(afe_symlink_target(vec_get(sl, 2)), "data"), "[2] target = data");
+    assert(streq(afe_path(vec_get(sl, 3)), "/link-to-file"), "[3] /link-to-file");
+    assert_eq(afe_file_type(vec_get(sl, 3)), ARK_FT_SYMLINK, "[3] SYMLINK");
+    assert(streq(afe_symlink_target(vec_get(sl, 3)), "data/real.txt"), "[3] target = data/real.txt");
+    # Symlinks carry no content hash/size.
+    assert(streq(afe_sha256(vec_get(sl, 2)), ""), "[2] symlink sha empty");
+    assert_eq(afe_size(vec_get(sl, 2)), 0, "[2] symlink size 0");
+
+    sys_unlink("/tmp/takumi-symlink-test/link-to-file");
+    sys_unlink("/tmp/takumi-symlink-test/link-to-dir");
+    sys_unlink("/tmp/takumi-symlink-test/data/real.txt");
+    sys_rmdir("/tmp/takumi-symlink-test/data");
+    sys_rmdir(sl_root);
+
     test_group("create_ark_manifest: required fields propagate from recipe");
     var cam_groups = vec_new();
     vec_push(cam_groups, "base");
@@ -1271,7 +1406,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.8.2"), "builder stamp is takumi/0.8.2");
+    assert(streq(man_builder(cam_m), "takumi/0.8.3"), "builder stamp is takumi/0.8.3");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -1566,6 +1701,208 @@ fn main() {
     sys_unlink("/tmp/takumi-ark-unsigned.ark");
     sys_unlink("/tmp/takumi-ark-empty.ark");
     sys_unlink("/tmp/takumi-ark-sym.ark");
+
+    # ===================================================================
+    # src/source.cyr — tar/tar.gz extraction + path-traversal guards.
+    # ===================================================================
+    test_group("source: _parse_octal");
+    assert_eq(_parse_octal("644", 3), 420, "0644 -> 420");
+    assert_eq(_parse_octal("777", 3), 511, "0777 -> 511");
+    assert_eq(_parse_octal("0000", 4), 0, "zeros -> 0");
+    assert_eq(_parse_octal("98", 2), 0 - 1, "non-octal -> -1");
+
+    test_group("source: _tar_path_is_safe");
+    assert_eq(_tar_path_is_safe("usr/bin/x"), 1, "normal rel path");
+    assert_eq(_tar_path_is_safe("../x"), 0, "leading .. rejected");
+    assert_eq(_tar_path_is_safe("a/../b"), 0, "interior .. rejected");
+    assert_eq(_tar_path_is_safe("/etc"), 0, "absolute rejected");
+    assert_eq(_tar_path_is_safe(""), 0, "empty rejected");
+    assert_eq(_tar_path_is_safe("a//b"), 0, "empty component rejected");
+    assert_eq(_tar_path_is_safe("./a"), 1, "leading ./ allowed");
+    assert_eq(_tar_path_is_safe("a/b/"), 1, "trailing slash allowed");
+
+    test_group("source: _symlink_target_is_safe");
+    assert_eq(_symlink_target_is_safe("usr/bin/x", "../lib/y"), 1, "relative within root");
+    assert_eq(_symlink_target_is_safe("a/b", "/abs"), 0, "absolute target rejected");
+    assert_eq(_symlink_target_is_safe("a", "../../x"), 0, "escaping target rejected");
+    assert_eq(_symlink_target_is_safe("x/y", ".."), 1, "stays within root");
+
+    var xdest = "/tmp/takumi-extract-out";
+    var xarc = "/tmp/takumi-extract.tar";
+    sys_unlink("/tmp/takumi-extract-out/hello.txt");
+    sys_unlink("/tmp/takumi-extract-out/lnk");
+    sys_unlink("/tmp/takumi-extract-out/sub/a.txt");
+    sys_unlink("/tmp/takumi-extract-out/g.txt");
+    sys_rmdir("/tmp/takumi-extract-out/sub");
+    sys_rmdir(xdest);
+    sys_unlink(xarc);
+    sys_unlink("/tmp/escape");
+
+    test_group("extract_archive: regular file + dir + symlink (.tar)");
+    var xsb = str_builder_new();
+    _tb_emit_file(xsb, "hello.txt", 48, 5, "world");
+    _tb_emit_file(xsb, "sub/", 53, 0, "");
+    _tb_emit_file(xsb, "sub/a.txt", 48, 2, "hi");
+    _tb_emit_symlink(xsb, "lnk", "hello.txt");
+    _tb_terminator(xsb);
+    assert(_tb_write(xsb, xarc) > 0, "write .tar fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "extract -> 0");
+    var xrb = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/hello.txt", xrb, 64), 5, "hello.txt size 5");
+    assert_eq(memeq(xrb, "world", 5), 1, "hello.txt contents = world");
+    var xrb2 = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/sub/a.txt", xrb2, 64), 2, "sub/a.txt size 2");
+    assert_eq(sys_access("/tmp/takumi-extract-out/lnk", 0), 0, "symlink created");
+
+    test_group("extract_archive: empty file + 513-byte spill");
+    sys_unlink("/tmp/takumi-extract-out/empty");
+    sys_unlink("/tmp/takumi-extract-out/big");
+    var spill = alloc(513);
+    var spi = 0;
+    while (spi < 513) { store8(spill + spi, 65 + (spi & 15)); spi = spi + 1; }
+    var xsb3 = str_builder_new();
+    _tb_emit_file(xsb3, "empty", 48, 0, "");
+    _tb_emit_file(xsb3, "big", 48, 513, spill);
+    _tb_terminator(xsb3);
+    assert(_tb_write(xsb3, xarc) > 0, "write spill fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "extract spill -> 0");
+    assert_eq(file_read_all("/tmp/takumi-extract-out/empty", xrb, 64), 0, "empty file is 0 bytes");
+    var xbig = alloc(1024);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/big", xbig, 1024), 513, "big file is 513 bytes");
+    assert_eq(memeq(xbig, spill, 513), 1, "big file contents intact across block boundary");
+
+    test_group("extract_archive: .tar.gz (gzip sniff + ISIZE + gunzip)");
+    var gsb = str_builder_new();
+    _tb_emit_file(gsb, "g.txt", 48, 3, "gzz");
+    _tb_terminator(gsb);
+    var gtar = str_builder_build(gsb);
+    var gtlen = str_len(gtar);
+    var gzcap = gtlen + 512;
+    var gzbuf = alloc(gzcap);
+    var gzn = gzip_compress(str_data(gtar), gtlen, gzbuf, gzcap);
+    assert(gzn > 0, "gzip_compress produced output");
+    var gzpath = "/tmp/takumi-extract.tar.gz";
+    sys_unlink(gzpath);
+    assert(file_write_all(gzpath, gzbuf, gzn) > 0, "write .tar.gz");
+    assert_eq(extract_archive(gzpath, xdest), 0, "extract .tar.gz -> 0");
+    assert_eq(sys_access("/tmp/takumi-extract-out/g.txt", 0), 0, "g.txt extracted from gzip");
+
+    test_group("extract_archive: 10x400 .tar.gz (bench-shaped fixture)");
+    var bigsb = str_builder_new();
+    var bpay = alloc(400);
+    var bpi = 0;
+    while (bpi < 400) { store8(bpay + bpi, 65 + (bpi & 15)); bpi = bpi + 1; }
+    var bf = 0;
+    while (bf < 10) {
+        var bnm = str_builder_new();
+        str_builder_add_cstr(bnm, "file");
+        str_builder_add_int(bnm, bf);
+        str_builder_add_cstr(bnm, ".dat");
+        _tb_emit_file(bigsb, str_cstr(str_builder_build(bnm)), 48, 400, bpay);
+        bf = bf + 1;
+    }
+    _tb_terminator(bigsb);
+    var bigtar = str_builder_build(bigsb);
+    var bgzcap = str_len(bigtar) + 1024;
+    var bgz = alloc(bgzcap);
+    var bgzn = gzip_compress(str_data(bigtar), str_len(bigtar), bgz, bgzcap);
+    assert(bgzn > 0, "gzip 10x400 ok");
+    sys_unlink("/tmp/takumi-extract-big.tar.gz");
+    assert(file_write_all("/tmp/takumi-extract-big.tar.gz", bgz, bgzn) > 0, "write big .tar.gz");
+    assert_eq(extract_archive("/tmp/takumi-extract-big.tar.gz", xdest), 0, "extract 10x400 -> 0");
+    assert_eq(sys_access("/tmp/takumi-extract-out/file9.dat", 0), 0, "file9.dat extracted");
+    var bf2 = 0;
+    while (bf2 < 10) {
+        var rm = str_builder_new();
+        str_builder_add_cstr(rm, "/tmp/takumi-extract-out/file");
+        str_builder_add_int(rm, bf2);
+        str_builder_add_cstr(rm, ".dat");
+        sys_unlink(str_cstr(str_builder_build(rm)));
+        bf2 = bf2 + 1;
+    }
+    sys_unlink("/tmp/takumi-extract-big.tar.gz");
+
+    test_group("extract_archive: empty archive (terminator only)");
+    var esb = str_builder_new();
+    _tb_terminator(esb);
+    assert(_tb_write(esb, xarc) > 0, "write empty archive");
+    assert_eq(extract_archive(xarc, xdest), 0, "empty archive -> 0");
+
+    test_group("extract_archive: malicious entries rejected (fail-closed)");
+    # ../escape -> traversal
+    var b1 = str_builder_new();
+    _tb_emit_file(b1, "../escape", 48, 1, "x");
+    _tb_terminator(b1);
+    assert(_tb_write(b1, xarc) > 0, "write ../escape");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "../escape -> UNSAFE_PATH");
+    assert(sys_access("/tmp/escape", 0) != 0, "no out-of-root artifact written");
+    # interior ..
+    var b2 = str_builder_new();
+    _tb_emit_file(b2, "a/../b", 48, 1, "x");
+    _tb_terminator(b2);
+    assert(_tb_write(b2, xarc) > 0, "write a/../b");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "a/../b -> UNSAFE_PATH");
+    # absolute
+    var b3 = str_builder_new();
+    _tb_emit_file(b3, "/etc/x", 48, 1, "x");
+    _tb_terminator(b3);
+    assert(_tb_write(b3, xarc) > 0, "write /etc/x");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "/etc/x -> UNSAFE_PATH");
+    # unsupported typeflag (hardlink '1' = 49)
+    var b4 = str_builder_new();
+    _tb_emit_file(b4, "hl", 49, 0, "");
+    _tb_terminator(b4);
+    assert(_tb_write(b4, xarc) > 0, "write hardlink");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSUPPORTED, "hardlink -> UNSUPPORTED");
+    # absolute symlink target
+    var b5 = str_builder_new();
+    _tb_emit_symlink(b5, "s", "/etc/passwd");
+    _tb_terminator(b5);
+    assert(_tb_write(b5, xarc) > 0, "write abs symlink");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "absolute symlink target -> UNSAFE_PATH");
+    # escaping symlink target
+    var b6 = str_builder_new();
+    _tb_emit_symlink(b6, "s", "../../escape");
+    _tb_terminator(b6);
+    assert(_tb_write(b6, xarc) > 0, "write escaping symlink");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "escaping symlink -> UNSAFE_PATH");
+    # bad magic (short garbage, not gzip, no ustar)
+    var garbage = "this is definitely not a tar archive at all";
+    assert(file_write_all(xarc, garbage, strlen(garbage)) > 0, "write garbage");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_BAD_MAGIC, "non-tar -> BAD_MAGIC");
+    # truncated (header claims size 100, archive ends after header)
+    var tblk = _tb_block();
+    _tb_put(tblk, 0, "t");
+    store8(tblk + 156, 48);
+    _tb_put_size(tblk, 100);
+    _tb_finalize(tblk);
+    assert(file_write_all(xarc, tblk, 512) > 0, "write truncated");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_TRUNCATED, "short data -> TRUNCATED");
+
+    # Cleanup extraction scratch.
+    sys_unlink("/tmp/takumi-extract-out/hello.txt");
+    sys_unlink("/tmp/takumi-extract-out/lnk");
+    sys_unlink("/tmp/takumi-extract-out/sub/a.txt");
+    sys_unlink("/tmp/takumi-extract-out/g.txt");
+    sys_unlink("/tmp/takumi-extract-out/empty");
+    sys_unlink("/tmp/takumi-extract-out/big");
+    sys_rmdir("/tmp/takumi-extract-out/sub");
+    sys_rmdir(xdest);
+    sys_unlink(xarc);
+    sys_unlink("/tmp/takumi-extract.tar.gz");
+
+    test_group("verify_source_hash");
+    var vpath = "/tmp/takumi-verify.bin";
+    sys_unlink(vpath);
+    var vdata = "source tarball bytes\n";
+    assert(file_write_all(vpath, vdata, strlen(vdata)) > 0, "write source file");
+    sha256_global_init();
+    var vhash = sha256_hex(vdata, strlen(vdata));
+    assert_eq(verify_source_hash(vpath, vhash), 1, "matching hash -> 1");
+    assert_eq(verify_source_hash(vpath, "0000000000000000000000000000000000000000000000000000000000000000"), 0, "wrong hash -> 0");
+    assert_eq(verify_source_hash(vpath, "short"), 0, "non-64-char expected -> 0");
+    assert_eq(verify_source_hash("/tmp/takumi-nope-verify", vhash), 0 - 1, "missing file -> -1");
+    sys_unlink(vpath);
 
     return assert_summary();
 }

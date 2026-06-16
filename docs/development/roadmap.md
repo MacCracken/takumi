@@ -32,11 +32,24 @@
 - [x] Package signing infrastructure — ed25519 over the `.ark` root
       hash, deterministic (reproducible) keys, embedded pubkey, verified
       on read.
+- [x] Symlink classification in `create_file_list` (0.8.3) — `lstat`-first
+      so symlinks are emitted as `ARK_FT_SYMLINK` with their `readlink`
+      target and never followed; symlinked directories are no longer walked
+      at their target (cycle risk closed).
+- [x] Source extraction `.tar` / `.tar.gz` (0.8.3) — `extract_archive` in
+      `src/source.cyr`: gzip sniff + ISIZE gunzip (stdlib `sankoch`), ustar
+      parse, and a fail-closed path-traversal guard. Format/guard model in
+      [ADR 0002](../adr/0002-source-extraction-safety.md). (`.tar.xz` /
+      `.tar.bz2` deferred — no xz/bzip2 codec in the stdlib yet.)
+- [x] Source SHA-256 verification (0.8.3) — `verify_source_hash` checks a
+      staged tarball against the recipe's `source.sha256` before extraction.
 
 ## Backlog (0.9.x)
 
-- [ ] Source download with SHA-256 verification
-- [ ] Source extraction (tar.gz, tar.xz, tar.bz2)
+- [ ] Source download (network fetch over HTTPS) — pairs with the existing
+      `verify_source_hash` integrity check
+- [ ] Source extraction `.tar.xz` / `.tar.bz2` — blocked on an xz/lzma and
+      bzip2 codec in the stdlib
 - [ ] Patch application
 - [ ] Build execution (shell-out to configure/make/install)
 - [ ] Fake-root installation directory management
@@ -48,11 +61,6 @@
 - [ ] Integration tests with real recipe files
 - [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, to
       be validated end-to-end once the CLI lands
-- [ ] Symlink classification in `create_file_list` — `lstat` +
-      `readlink` + explicit `ARK_FT_SYMLINK` emission. `is_dir` from
-      `lib/fs.cyr` follows links today, so a symlinked directory is
-      walked at its target (cycle-risk exists but is rare for real
-      fake-roots)
 
 ## Future (post-0.9.x)
 

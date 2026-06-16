@@ -9,11 +9,11 @@
 #   - Paths beginning "/etc/"  -> ARK_FT_CONFIG
 #   - Everything else -> ARK_FT_REGULAR
 #
-# Symlinks are a known gap in this bite. lib/fs.cyr's `is_dir`
-# resolves symlinks under the hood, so a symlinked directory is
-# currently walked at its target (with the cycle-risk that implies).
-# Real recipes produce plain trees; a future bite will add lstat +
-# readlink for proper symlink handling when it matters.
+# Symlinks: the walker lstat()s every entry first (`_is_symlink`), so a
+# symlink is classified as ARK_FT_SYMLINK with its readlink target and is
+# never followed — `is_dir` (which resolves links) only runs on non-links,
+# so a symlinked directory is no longer walked at its target and the
+# cycle risk is gone (0.8.3, closing the prior bite's gap).
 
 # Byte offsets for the `{hex_cstr, size}` struct returned by
 # _hash_and_size. Tiny helper struct so the walker can unpack the
@@ -84,6 +84,39 @@ fn _ark_type_for(rel_cstr) {
     return ARK_FT_REGULAR;
 }
 
+# POSIX file-type bits. Defined locally so the walker can classify
+# symlinks without pulling lib/yukti.cyr just for S_IFLNK.
+enum ArkStatMask {
+    ARK_S_IFMT = 0xF000;
+    ARK_S_IFLNK = 0xA000;
+}
+
+# lstat `path_cstr` (does NOT follow links) and return 1 iff it is a
+# symlink. STAT_MODE / STAT_BUFSZ are platform-gated constants from the
+# active lib/syscalls_*.cyr; st_mode's format nibble holds the type.
+fn _is_symlink(path_cstr) {
+    var st = alloc(STAT_BUFSZ);
+    if (sys_lstat(path_cstr, st) != 0) { return 0; }
+    var mode = load64(st + STAT_MODE);
+    if ((mode & ARK_S_IFMT) == ARK_S_IFLNK) { return 1; }
+    return 0;
+}
+
+# Read a symlink's target into a fresh NUL-terminated cstr, or "" on
+# failure. readlink does not NUL-terminate, so we do.
+fn _read_link(path_cstr) {
+    var cap = 4096;
+    var buf = alloc(cap + 1);
+    var n = sys_readlink(path_cstr, buf, cap);
+    if (n < 0) {
+        var empty = alloc(1);
+        store8(empty, 0);
+        return empty;
+    }
+    store8(buf + n, 0);
+    return buf;
+}
+
 # Recursive tree walker. `root_str` never changes; `current_str` is
 # the directory currently being descended; `entries` is the output
 # vec of ArkFileEntry pointers.
@@ -94,17 +127,24 @@ fn _walk(root_str, current_str, entries) {
     while (i < n) {
         var full = path_join(current_str, vec_get(names, i));
         var rel = _rel_path(root_str, full);
-        if (is_dir(full) == 1) {
-            vec_push(entries, afe_directory(rel));
-            _walk(root_str, full, entries);
+        var full_c = str_cstr(full);
+        if (_is_symlink(full_c) == 1) {
+            # Classify the link itself; never follow it (no recursion,
+            # no hashing of the target).
+            vec_push(entries, afe_symlink(rel, _read_link(full_c)));
         } else {
-            var hs = _hash_and_size(str_cstr(full));
-            if (hs != 0) {
-                var ft = _ark_type_for(rel);
-                if (ft == ARK_FT_CONFIG) {
-                    vec_push(entries, afe_config(rel, hs_hex(hs), hs_size(hs)));
-                } else {
-                    vec_push(entries, afe_regular(rel, hs_hex(hs), hs_size(hs)));
+            if (is_dir(full) == 1) {
+                vec_push(entries, afe_directory(rel));
+                _walk(root_str, full, entries);
+            } else {
+                var hs = _hash_and_size(full_c);
+                if (hs != 0) {
+                    var ft = _ark_type_for(rel);
+                    if (ft == ARK_FT_CONFIG) {
+                        vec_push(entries, afe_config(rel, hs_hex(hs), hs_size(hs)));
+                    } else {
+                        vec_push(entries, afe_regular(rel, hs_hex(hs), hs_size(hs)));
+                    }
                 }
             }
         }
@@ -181,7 +221,7 @@ fn sum_installed_size(entries) {
 # parameter keeps tests deterministic; the real build pipeline
 # passes `clock_epoch_secs()` from lib/chrono.cyr.
 #
-# The builder string is hardcoded "takumi/0.8.2" — it's takumi's own
+# The builder string is hardcoded "takumi/0.8.3" — it's takumi's own
 # identity stamp in every manifest, not a tunable.
 # ---------------------------------------------------------------------------
 
@@ -201,7 +241,7 @@ fn create_ark_manifest(recipe, entries, default_arch_cstr, build_date_secs) {
     man_set_arch(m, arch);
     man_set_size_installed(m, sum_installed_size(entries));
     man_set_build_date(m, build_date_secs);
-    man_set_builder(m, "takumi/0.8.2");
+    man_set_builder(m, "takumi/0.8.3");
     man_set_source_url(m, src_url(src));
     man_set_source_hash(m, src_sha256(src));
     man_set_license(m, pkg_license(pkg));

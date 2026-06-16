@@ -52,11 +52,22 @@ logical sections:
 1. Load:     .cyml files -> CymlDoc (cyml_parse) -> TOML header (toml_parse) -> BuildRecipe structs
 2. Validate: BuildRecipe -> Result<warnings> (reject malformed early)
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
-4. Build:    (not yet implemented) download, extract, configure, make, install
-5. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr)
-             -> serialized .ark v1 (src/ark_format.cyr): TOML manifest +
-                file index + DEFLATE data + SHA-256 root + ed25519 signature
+4. Source:   verify_source_hash (SHA-256 vs recipe) -> extract_archive
+             (.tar/.tar.gz, path-traversal-guarded) -> source tree (src/source.cyr)
+5. Build:    (not yet implemented) configure, make, install -> fake-root
+6. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr,
+             symlink-aware) -> serialized .ark v1 (src/ark_format.cyr): TOML
+             manifest + file index + DEFLATE data + SHA-256 root + ed25519 signature
 ```
+
+### Source acquisition (`src/source.cyr`)
+
+`verify_source_hash(path, expected_sha256)` confirms a staged tarball matches the
+recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar` /
+`.tar.gz` (gzip via stdlib `sankoch`) with a fail-closed path-traversal guard
+(rejects `..`, absolute paths, and escaping symlink targets; unsupported tar
+entry types abort). Network download stays in 0.9.x; the safety model is in
+[ADR 0002](../adr/0002-source-extraction-safety.md).
 
 ### `.ark` serialization (`src/ark_format.cyr`)
 

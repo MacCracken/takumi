@@ -1,0 +1,422 @@
+# takumi — source acquisition: integrity verification + archive extraction.
+#
+# Two responsibilities, both run before a recipe's build phase:
+#   1. verify_source_hash — confirm a downloaded/staged tarball matches the
+#      recipe's declared SHA-256 before anything touches it.
+#   2. extract_archive    — unpack a `.tar` / `.tar.gz` into a scratch dir,
+#      with strict path-traversal guards (tar-slip is the classic sink).
+#
+# Network download is intentionally NOT here (TLS surface; 0.9.x). `.tar.xz`
+# and `.tar.bz2` are rejected — no xz/bzip2 codec exists in the stdlib yet.
+#
+# Security model and the path-guard rationale are recorded in
+# docs/adr/0002-source-extraction-safety.md. The guards are fail-closed:
+# any unsupported entry type or unsafe path aborts the whole extraction
+# before a single offending byte is written.
+
+# Error codes (bare variants fold to const ints, per repo convention).
+# extract_archive returns 0 on success or `0 - SRC_ERR_*`.
+enum SrcErr {
+    SRC_ERR_OPEN = 1;        # cannot open / stat / short read
+    SRC_ERR_TOO_LARGE = 2;   # archive or gunzip output exceeds the cap
+    SRC_ERR_BAD_MAGIC = 3;   # not gzip and not ustar (covers xz/bz2/zip)
+    SRC_ERR_GUNZIP = 4;      # sankoch gzip_decompress failed
+    SRC_ERR_TRUNCATED = 5;   # header < 512 or data shorter than its size
+    SRC_ERR_BAD_HEADER = 6;  # checksum / octal / magic check failed
+    SRC_ERR_UNSUPPORTED = 7; # typeflag outside {regular, dir, symlink}
+    SRC_ERR_UNSAFE_PATH = 8; # path-traversal guard tripped
+    SRC_ERR_WRITE = 9;       # mkdir / write / symlink syscall failed
+}
+
+# 512 MiB ceiling on both the archive and the gunzip output.
+enum SrcLimit { SRC_MAX_BYTES = 536870912; }
+
+# --- small byte/path helpers ------------------------------------------
+
+# Parse an ASCII octal field (space/NUL padded), e.g. tar size/checksum.
+# Returns the value, 0 for an all-blank field, or -1 on a non-octal byte.
+fn _parse_octal(ptr, len) {
+    var i = 0;
+    while (i < len) {
+        var c = load8(ptr + i) & 0xFF;
+        if (c == 32 || c == 0) { i = i + 1; } else { break; }
+    }
+    var saw = 0;
+    var val = 0;
+    while (i < len) {
+        var c2 = load8(ptr + i) & 0xFF;
+        if (c2 == 0 || c2 == 32) { break; }
+        if (c2 < 48 || c2 > 55) { return 0 - 1; }
+        val = val * 8 + (c2 - 48);
+        saw = 1;
+        i = i + 1;
+    }
+    if (saw == 0) { return 0; }
+    return val;
+}
+
+# Read up to `maxlen` bytes from block+off, stopping at the first NUL,
+# into a fresh NUL-terminated cstr. A field that fills `maxlen` with no
+# NUL is copied whole (does not over-read the next field).
+fn _field_cstr(block, off, maxlen) {
+    var n = 0;
+    while (n < maxlen) {
+        if (load8(block + off + n) == 0) { break; }
+        n = n + 1;
+    }
+    var buf = alloc(n + 1);
+    memcpy(buf, block + off, n);
+    store8(buf + n, 0);
+    return buf;
+}
+
+# ustar full path = prefix (345,155) + "/" + name (0,100) when prefix set.
+fn _tar_full_path(block) {
+    var name = _field_cstr(block, 0, 100);
+    var prefix = _field_cstr(block, 345, 155);
+    var lp = strlen(prefix);
+    if (lp == 0) { return name; }
+    var ln = strlen(name);
+    var buf = alloc(lp + 1 + ln + 1);
+    memcpy(buf, prefix, lp);
+    store8(buf + lp, 47);
+    memcpy(buf + lp + 1, name, ln);
+    store8(buf + lp + 1 + ln, 0);
+    return buf;
+}
+
+# Join two cstrs with a single '/'.
+fn _join2(a, b) {
+    var la = strlen(a);
+    var lb = strlen(b);
+    var buf = alloc(la + 1 + lb + 1);
+    memcpy(buf, a, la);
+    store8(buf + la, 47);
+    memcpy(buf + la + 1, b, lb);
+    store8(buf + la + 1 + lb, 0);
+    return buf;
+}
+
+# Directory portion of a cstr path (everything before the last '/'),
+# or "" if there is no slash.
+fn _dirname_cstr(path) {
+    var n = strlen(path);
+    var last = 0 - 1;
+    var i = 0;
+    while (i < n) {
+        if (load8(path + i) == 47) { last = i; }
+        i = i + 1;
+    }
+    if (last < 0) {
+        var e = alloc(1);
+        store8(e, 0);
+        return e;
+    }
+    var buf = alloc(last + 1);
+    memcpy(buf, path, last);
+    store8(buf + last, 0);
+    return buf;
+}
+
+# Count non-empty, non-"." components of a cstr path.
+fn _component_count(path) {
+    var n = strlen(path);
+    var count = 0;
+    var i = 0;
+    var start = 0;
+    while (i <= n) {
+        var c = 47;
+        if (i < n) { c = load8(path + i) & 0xFF; }
+        if (c == 47) {
+            var clen = i - start;
+            if (clen > 0) {
+                var dot = 0;
+                if (clen == 1) { if (load8(path + start) == 46) { dot = 1; } }
+                if (dot == 0) { count = count + 1; }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+# --- path-traversal guard (security core) -----------------------------
+
+# Structural gate for an entry path. Rejects empty, absolute, any ".."
+# component, empty interior component (a//b), and NUL/control/backslash
+# bytes. A literal ".." is never legitimate in a canonical archive entry,
+# so rejecting it outright removes a class of normalization-bug risk.
+fn _tar_path_is_safe(path) {
+    var n = strlen(path);
+    if (n == 0) { return 0; }
+    if (load8(path) == 47) { return 0; }
+    var i = 0;
+    var start = 0;
+    while (i <= n) {
+        var c = 47;
+        if (i < n) {
+            c = load8(path + i) & 0xFF;
+            if (c == 0) { return 0; }
+            if (c < 32) { return 0; }
+            if (c == 92) { return 0; }
+        }
+        if (c == 47) {
+            var clen = i - start;
+            if (clen == 0) {
+                if (i != n) { return 0; }
+            } else {
+                if (clen == 2) {
+                    if (load8(path + start) == 46) {
+                        if (load8(path + start + 1) == 46) { return 0; }
+                    }
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Symlink target gate. Rejects absolute targets and bad bytes, then
+# resolves the target from the link's own directory depth: if the running
+# depth ever drops below 0 the link escapes the dest root -> reject.
+# Relative targets that stay within the root are allowed (autotools and
+# libtool ship them). Purely lexical; we never follow the link.
+fn _symlink_target_is_safe(link_rel, target) {
+    var tn = strlen(target);
+    if (tn == 0) { return 0; }
+    if (load8(target) == 47) { return 0; }
+    var i = 0;
+    while (i < tn) {
+        var c = load8(target + i) & 0xFF;
+        if (c == 0) { return 0; }
+        if (c < 32) { return 0; }
+        if (c == 92) { return 0; }
+        i = i + 1;
+    }
+    var depth = _component_count(link_rel) - 1;
+    if (depth < 0) { depth = 0; }
+    var start = 0;
+    i = 0;
+    while (i <= tn) {
+        var ch = 47;
+        if (i < tn) { ch = load8(target + i) & 0xFF; }
+        if (ch == 47) {
+            var clen = i - start;
+            if (clen > 0) {
+                var single_dot = 0;
+                if (clen == 1) { if (load8(target + start) == 46) { single_dot = 1; } }
+                var dotdot = 0;
+                if (clen == 2) {
+                    if (load8(target + start) == 46) {
+                        if (load8(target + start + 1) == 46) { dotdot = 1; }
+                    }
+                }
+                if (single_dot == 1) {
+                    # no depth change
+                } else {
+                    if (dotdot == 1) {
+                        depth = depth - 1;
+                        if (depth < 0) { return 0; }
+                    } else {
+                        depth = depth + 1;
+                    }
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# --- filesystem helpers -----------------------------------------------
+
+# mkdir one dir; success, or already-exists (verified via is_dir to stay
+# errno-convention agnostic) counts as success. Returns 0 or -1.
+fn _mkdir_one(path_cstr) {
+    if (sys_mkdir(path_cstr, 0x1FF) == 0) { return 0; }
+    if (is_dir(str_from(path_cstr)) == 1) { return 0; }
+    return 0 - 1;
+}
+
+# mkdir -p over a private copy of `dir_cstr` (creates every prefix).
+fn _mkdir_p(dir_cstr) {
+    var n = strlen(dir_cstr);
+    if (n == 0) { return 0; }
+    var buf = alloc(n + 1);
+    memcpy(buf, dir_cstr, n);
+    store8(buf + n, 0);
+    var i = 1;
+    while (i < n) {
+        if (load8(buf + i) == 47) {
+            store8(buf + i, 0);
+            if (_mkdir_one(buf) != 0) { return 0 - 1; }
+            store8(buf + i, 47);
+        }
+        i = i + 1;
+    }
+    return _mkdir_one(buf);
+}
+
+# --- tar block helpers ------------------------------------------------
+
+fn _is_zero_block(block) {
+    var i = 0;
+    while (i < 512) {
+        if (load8(block + i) != 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# ustar header checksum: sum all 512 bytes with the 8 checksum bytes
+# (148..156) treated as ASCII spaces; compare to the octal at offset 148.
+fn _tar_checksum_ok(block) {
+    var stored = _parse_octal(block + 148, 8);
+    if (stored < 0) { return 0; }
+    var sum = 0;
+    var i = 0;
+    while (i < 512) {
+        var c = load8(block + i) & 0xFF;
+        if (i >= 148) { if (i < 156) { c = 32; } }
+        sum = sum + c;
+        i = i + 1;
+    }
+    if (sum == stored) { return 1; }
+    return 0;
+}
+
+# gzip trailer ISIZE = uncompressed size mod 2^32 (little-endian).
+fn _gzip_isize(buf, len) {
+    if (len < 4) { return 0 - 1; }
+    var p = buf + len - 4;
+    return (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16) | ((load8(p + 3) & 0xFF) << 24);
+}
+
+# --- public: extraction -----------------------------------------------
+
+# Extract a `.tar` or `.tar.gz` at `archive_path_cstr` into
+# `dest_dir_cstr` (created if absent). Returns 0 or `0 - SRC_ERR_*`.
+# Fail-closed: aborts before writing any entry that fails a guard.
+fn extract_archive(archive_path_cstr, dest_dir_cstr) {
+    # 1. Read the whole archive (size via lstat; capped).
+    var st = alloc(STAT_BUFSZ);
+    if (sys_lstat(archive_path_cstr, st) != 0) { return 0 - SRC_ERR_OPEN; }
+    var sz = load64(st + STAT_SIZE);
+    if (sz <= 0) { return 0 - SRC_ERR_OPEN; }
+    if (sz > SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
+    var raw = alloc(sz);
+    if (file_read_all(archive_path_cstr, raw, sz) != sz) { return 0 - SRC_ERR_OPEN; }
+
+    # 2. Sniff: gzip magic, else require ustar; gunzip if needed.
+    var tar_buf = raw;
+    var tar_len = sz;
+    if (sz >= 2) {
+        if ((load8(raw) & 0xFF) == 0x1F) {
+            if ((load8(raw + 1) & 0xFF) == 0x8B) {
+                var isize = _gzip_isize(raw, sz);
+                if (isize <= 0) { return 0 - SRC_ERR_GUNZIP; }
+                if (isize > SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
+                var out_cap = isize + 512;
+                var out = alloc(out_cap);
+                var dn = gzip_decompress(raw, sz, out, out_cap);
+                if (dn < 0) { return 0 - SRC_ERR_GUNZIP; }
+                tar_buf = out;
+                tar_len = dn;
+            }
+        }
+    }
+    # Need at least one block. A real first header must carry the ustar
+    # magic; an empty archive is just zero blocks (no magic) and is fine.
+    if (tar_len < 512) { return 0 - SRC_ERR_BAD_MAGIC; }
+    if (_is_zero_block(tar_buf) != 1) {
+        if (memeq(tar_buf + 257, "ustar", 5) != 1) { return 0 - SRC_ERR_BAD_MAGIC; }
+    }
+
+    # 3. Ensure destination exists.
+    if (_mkdir_p(dest_dir_cstr) != 0) { return 0 - SRC_ERR_WRITE; }
+
+    # 4. Iterate 512-byte headers.
+    var pos = 0;
+    var zero_run = 0;
+    var ended = 0;
+    while (pos + 512 <= tar_len) {
+        var block = tar_buf + pos;
+        if (_is_zero_block(block) == 1) {
+            zero_run = zero_run + 1;
+            pos = pos + 512;
+            if (zero_run >= 2) { ended = 1; break; }
+        } else {
+            zero_run = 0;
+            if (_tar_checksum_ok(block) != 1) { return 0 - SRC_ERR_BAD_HEADER; }
+            if (memeq(block + 257, "ustar", 5) != 1) { return 0 - SRC_ERR_BAD_HEADER; }
+            var typ = load8(block + 156) & 0xFF;
+            var size = _parse_octal(block + 124, 12);
+            if (size < 0) { return 0 - SRC_ERR_BAD_HEADER; }
+            var full = _tar_full_path(block);
+
+            var kind = 0;             # 0 regular, 1 dir, 2 symlink
+            if (typ == 48 || typ == 0) { kind = 0; }
+            else { if (typ == 53) { kind = 1; }
+            else { if (typ == 50) { kind = 2; }
+            else { return 0 - SRC_ERR_UNSUPPORTED; } } }
+
+            if (_tar_path_is_safe(full) != 1) { return 0 - SRC_ERR_UNSAFE_PATH; }
+            pos = pos + 512;
+
+            if (kind == 1) {
+                if (_mkdir_p(_join2(dest_dir_cstr, full)) != 0) { return 0 - SRC_ERR_WRITE; }
+            } else {
+                if (kind == 2) {
+                    var link = _field_cstr(block, 157, 100);
+                    if (_symlink_target_is_safe(full, link) != 1) { return 0 - SRC_ERR_UNSAFE_PATH; }
+                    var sfull = _join2(dest_dir_cstr, full);
+                    if (_mkdir_p(_dirname_cstr(sfull)) != 0) { return 0 - SRC_ERR_WRITE; }
+                    if (sys_symlink(link, sfull) != 0) { return 0 - SRC_ERR_WRITE; }
+                } else {
+                    if (pos + size > tar_len) { return 0 - SRC_ERR_TRUNCATED; }
+                    var ffull = _join2(dest_dir_cstr, full);
+                    if (_mkdir_p(_dirname_cstr(ffull)) != 0) { return 0 - SRC_ERR_WRITE; }
+                    if (file_write_all(ffull, tar_buf + pos, size) != size) { return 0 - SRC_ERR_WRITE; }
+                    pos = pos + ((size + 511) / 512) * 512;
+                }
+            }
+        }
+    }
+
+    # A clean archive ends in two zero blocks; tolerate exact consumption.
+    if (ended == 0) {
+        if (pos != tar_len) { return 0 - SRC_ERR_TRUNCATED; }
+    }
+    return 0;
+}
+
+# --- public: source integrity -----------------------------------------
+
+# Verify the file at `path_cstr` hashes to `expected_sha256_cstr`
+# (lowercase hex, 64 chars). Returns 1 on match, 0 on mismatch / bad
+# expected length, -1 if the file cannot be opened. Streams in 4 KB
+# chunks (mirrors _hash_and_size in src/package.cyr).
+fn verify_source_hash(path_cstr, expected_sha256_cstr) {
+    if (strlen(expected_sha256_cstr) != 64) { return 0; }
+    var fd = file_open(path_cstr, 0, 0);
+    if (fd < 0) { return 0 - 1; }
+    sha256_global_init();
+    var ctx = sha256_init();
+    var buf = alloc(4096);
+    var n = file_read(fd, buf, 4096);
+    while (n > 0) {
+        sha256_update(ctx, buf, n);
+        n = file_read(fd, buf, 4096);
+    }
+    file_close(fd);
+    var digest = alloc(32);
+    sha256_finalize(ctx, digest);
+    fl_free(ctx);
+    var hex = hex_encode(digest, 32);
+    if (memeq(hex, expected_sha256_cstr, 64) == 1) { return 1; }
+    return 0;
+}

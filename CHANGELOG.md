@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.3] - 2026-06-16
+
+Source integrity & file fidelity — more 0.9.x I/O work pulled into the 0.8.x
+arc to settle the input/extraction security surface before the pre-v1 audit.
+680 tests (was 603), all passing; benches green.
+
+### Added
+
+- **Symlink classification in the fake-root walk** (`src/package.cyr`): the
+  walker now `lstat`s every entry first, so a symlink is recorded as
+  `ARK_FT_SYMLINK` with its `readlink` target and is **never followed** —
+  `is_dir` (which resolves links) only runs on non-links. Closes the prior
+  bite's gap where a symlinked directory was walked at its target (cycle risk),
+  and makes `.ark` archives record links faithfully.
+- **`.tar` / `.tar.gz` extractor** (`src/source.cyr`):
+  `extract_archive(archive_path, dest_dir)` — gzip sniff + ISIZE-sized gunzip
+  (stdlib `sankoch`), ustar parse with header-checksum validation, and a
+  **fail-closed path-traversal guard** (rejects `..`, absolute paths,
+  NUL/control/backslash, and symlink targets that escape the destination;
+  unsupported typeflags abort rather than risk mis-extraction). 512 MiB cap.
+  Format/guard model in [ADR 0002](docs/adr/0002-source-extraction-safety.md).
+  `.tar.xz`/`.tar.bz2` are rejected — no xz/bzip2 codec in the stdlib yet.
+- **Source-hash verification** (`src/source.cyr`):
+  `verify_source_hash(path, expected_sha256)` — streamed SHA-256 compared to
+  the recipe's `source.sha256`, to run before extraction.
+- Tests: symlink classification (symlinked dir not recursed), extractor
+  pure-helper units, positive extraction (regular/dir/symlink, empty file,
+  multi-block file, prefix+name, `.tar.gz`, 10×400 archive, empty archive), and
+  the malicious set (`../escape`, `a/../b`, `/etc/x`, absolute/escaping symlink
+  targets, unsupported typeflag, bad checksum, truncated, bad magic) — each
+  asserting the specific `SRC_ERR_*` and that no out-of-root artifact is
+  written.
+- Benchmarks: `extract_tar_gz_10x400` **449 µs** (gunzip + parse + guard +
+  write for a 10-file archive) and `verify_source_hash_64k` **205 µs**.
+- [ADR 0002](docs/adr/0002-source-extraction-safety.md) — source extraction
+  safety.
+
+### Changed
+
+- Builder stamp → `takumi/0.8.3`.
+- Roadmap: symlink classification, `.tar`/`.tar.gz` extraction, and source
+  verification moved to Completed; remaining 0.9.x I/O (network download,
+  build execution, patch application, `.tar.xz`/`.tar.bz2`) re-scoped with the
+  xz/bz2 codec gap noted.
+
 ## [0.8.2] - 2026-06-16
 
 The `.ark` on-disk package format — pulled from the 0.9.x roadmap into the

@@ -21,6 +21,7 @@ include "src/parse.cyr"
 include "src/ark.cyr"
 include "src/package.cyr"
 include "src/ark_format.cyr"
+include "src/source.cyr"
 include "src/engine.cyr"
 
 # ---------------------------------------------------------------------------
@@ -432,6 +433,110 @@ fn bench_ark_write() {
     return 0;
 }
 
+# Emit one regular-file ustar entry (header + 512-padded data) into `sb`.
+fn _bx_emit(sb, name, size, data) {
+    var b = alloc(512);
+    memcpy(b, name, strlen(name));
+    store8(b + 156, 48);
+    var i = 10;
+    var v = size;
+    while (i >= 0) { store8(b + 124 + i, 48 + (v & 7)); v = v / 8; i = i - 1; }
+    store8(b + 135, 0);
+    memcpy(b + 257, "ustar", 5);
+    store8(b + 263, 48);
+    store8(b + 264, 48);
+    var c = 148;
+    while (c < 156) { store8(b + c, 32); c = c + 1; }
+    var sum = 0;
+    var k = 0;
+    while (k < 512) { sum = sum + (load8(b + k) & 0xFF); k = k + 1; }
+    var j = 5;
+    var sv = sum;
+    while (j >= 0) { store8(b + 148 + j, 48 + (sv & 7)); sv = sv / 8; j = j - 1; }
+    store8(b + 154, 0);
+    store8(b + 155, 32);
+    _sb_add_raw(sb, b, 512);
+    if (size > 0) {
+        _sb_add_raw(sb, data, size);
+        var pad = ((size + 511) / 512) * 512 - size;
+        if (pad > 0) { _sb_add_raw(sb, alloc(pad), pad); }
+    }
+    return 0;
+}
+
+# Extract a 10-file (400 B each) .tar.gz: gzip sniff + ISIZE + gunzip +
+# ustar parse + per-entry path guard + mkdir/write.
+fn bench_extract_tar_gz() {
+    var sb = str_builder_new();
+    var payload = alloc(400);
+    var p = 0;
+    while (p < 400) { store8(payload + p, 65 + (p & 15)); p = p + 1; }
+    var f = 0;
+    while (f < 10) {
+        var nm = str_builder_new();
+        str_builder_add_cstr(nm, "file");
+        str_builder_add_int(nm, f);
+        str_builder_add_cstr(nm, ".dat");
+        _bx_emit(sb, str_cstr(str_builder_build(nm)), 400, payload);
+        f = f + 1;
+    }
+    _sb_add_raw(sb, alloc(1024), 1024);
+    var tar = str_builder_build(sb);
+    var cap = str_len(tar) + 1024;
+    var gz = alloc(cap);
+    var gzn = gzip_compress(str_data(tar), str_len(tar), gz, cap);
+    var path = "/tmp/takumi-bench-extract.tar.gz";
+    file_write_all(path, gz, gzn);
+    var dest = "/tmp/takumi-bench-extract-out";
+
+    var b = bench_new("extract_tar_gz_10x400");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100) {
+        extract_archive(path, dest);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100);
+    bench_report(b);
+
+    var ci = 0;
+    while (ci < 10) {
+        var rm = str_builder_new();
+        str_builder_add_cstr(rm, "/tmp/takumi-bench-extract-out/file");
+        str_builder_add_int(rm, ci);
+        str_builder_add_cstr(rm, ".dat");
+        sys_unlink(str_cstr(str_builder_build(rm)));
+        ci = ci + 1;
+    }
+    sys_rmdir(dest);
+    sys_unlink(path);
+    return 0;
+}
+
+# Verify a 64 KiB source file's SHA-256 against its expected digest
+# (the integrity check run before extraction).
+fn bench_verify_source_hash() {
+    var n = 65536;
+    var data = alloc(n);
+    var p = 0;
+    while (p < n) { store8(data + p, 65 + (p & 31)); p = p + 1; }
+    var path = "/tmp/takumi-bench-verify.bin";
+    file_write_all(path, data, n);
+    sha256_global_init();
+    var expect = sha256_hex(data, n);
+    var b = bench_new("verify_source_hash_64k");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 1000) {
+        verify_source_hash(path, expect);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000);
+    bench_report(b);
+    sys_unlink(path);
+    return 0;
+}
+
 fn main() {
     alloc_init();
     bench_parse_minimal();
@@ -444,6 +549,8 @@ fn main() {
     bench_topo_300();
     bench_create_file_list();
     bench_ark_write();
+    bench_extract_tar_gz();
+    bench_verify_source_hash();
     bench_sha256_1kb();
     bench_sha256_1mb();
     return 0;
