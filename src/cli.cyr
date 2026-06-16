@@ -1,0 +1,264 @@
+# takumi — command-line surface.
+#
+# `main` (src/main.cyr) marshals argv into a vec of cstrs and calls
+# `cli_dispatch`, which returns a process exit code. Keeping dispatch in a
+# plain function (no argv access) makes every command unit-testable: a test
+# builds a synthetic args vec and asserts the returned code.
+#
+# Exit codes:
+#   0  success
+#   1  operational error (bad/missing input, invalid recipe, dependency cycle)
+#   2  usage error, or a not-yet-implemented path (build execution is 0.9.x)
+#
+# Build execution (configure/make/install) is not implemented yet, so `build`
+# runs as a dry-run that prints the plan and exits 2. See
+# docs/adr/0003-cli-surface.md.
+
+# Single source of the CLI version string. Keep in sync with VERSION,
+# cyrius.cyml, and the src/package.cyr builder stamp.
+fn takumi_version() { return "0.8.4"; }
+
+# --- small output helpers ---------------------------------------------
+
+# Print a runtime cstr + newline. We can't use println() here: its
+# overload dispatch routes an i64-typed argument (which str_cstr / vec_get
+# return) to the integer printer, so a dynamic string would print as a
+# pointer. A direct write avoids the ambiguity.
+fn _putln(s) {
+    syscall(1, 1, s, strlen(s));
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+
+fn _cli_say2(prefix, s) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, prefix);
+    str_builder_add_cstr(sb, s);
+    _putln(str_cstr(str_builder_build(sb)));
+    return 0;
+}
+
+fn _print_usage() {
+    println("takumi — AGNOS package build system");
+    println("");
+    println("Usage: takumi <command> [args]");
+    println("");
+    println("Commands:");
+    println("  validate <recipe.cyml>...   parse and validate recipes");
+    println("  list <dir>                  list recipes in a directory");
+    println("  order <dir>                 print topological build order");
+    println("  build <dir>                 plan a build (execution: 0.9.x)");
+    println("  version                     print version");
+    println("  help                        show this help");
+    return 0;
+}
+
+# --- commands ---------------------------------------------------------
+
+fn cmd_version() {
+    _cli_say2("takumi ", takumi_version());
+    return 0;
+}
+
+fn cmd_help() {
+    _print_usage();
+    return 0;
+}
+
+# Print a validation result's errors then warnings, indented.
+fn _print_val_msgs(v) {
+    var errs = val_errors(v);
+    var warns = val_warnings(v);
+    var i = 0;
+    while (i < vec_len(errs)) {
+        _cli_say2("  error: ", vec_get(errs, i));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < vec_len(warns)) {
+        _cli_say2("  warning: ", vec_get(warns, i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Validate each recipe path. Returns 0 if all valid, 1 if any fail to
+# parse or validate, 2 if no paths were given.
+fn cmd_validate(paths) {
+    var n = vec_len(paths);
+    if (n == 0) {
+        println("validate: no recipe files given");
+        return 2;
+    }
+    var rc = 0;
+    var i = 0;
+    while (i < n) {
+        var path = vec_get(paths, i);
+        var recipe = recipe_parse_file(path);
+        if (recipe == 0) {
+            _cli_say2("parse failed: ", path);
+            rc = 1;
+        } else {
+            var v = validate_recipe(recipe);
+            if (val_ok(v) == 1) {
+                _cli_say2("ok: ", path);
+            } else {
+                _cli_say2("invalid: ", path);
+                rc = 1;
+            }
+            _print_val_msgs(v);
+        }
+        i = i + 1;
+    }
+    return rc;
+}
+
+# List recipes in `dir` as "name  version", sorted by name.
+fn cmd_list(dir) {
+    if (is_dir(str_from(dir)) == 0) {
+        _cli_say2("list: not a directory: ", dir);
+        return 1;
+    }
+    var sys = tbs_new(dir, "", "");
+    tbs_load_all_recipes(sys);
+    var map = tbs_loaded_recipes(sys);
+    var keys = map_keys(map);
+    var sorted = vec_new();
+    var i = 0;
+    while (i < vec_len(keys)) {
+        vec_insert_sorted_cstr(sorted, vec_get(keys, i));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < vec_len(sorted)) {
+        var r = map_get(map, vec_get(sorted, i));
+        var pkg = recipe_package(r);
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, pkg_name(pkg));
+        str_builder_add_cstr(sb, "  ");
+        str_builder_add_cstr(sb, pkg_version(pkg));
+        _putln(str_cstr(str_builder_build(sb)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Build {packages_vec, adj_map} from a loaded build system: package name ->
+# its runtime deps (external deps are skipped by resolve_build_order).
+fn _graph_from_recipes(sys) {
+    var map = tbs_loaded_recipes(sys);
+    var keys = map_keys(map);
+    var packages = vec_new();
+    var adj = map_new();
+    var i = 0;
+    while (i < vec_len(keys)) {
+        var r = map_get(map, vec_get(keys, i));
+        var name = pkg_name(recipe_package(r));
+        vec_push(packages, name);
+        map_set(adj, name, dep_runtime(recipe_depends(r)));
+        i = i + 1;
+    }
+    var pair = alloc(16);
+    store64(pair, packages);
+    store64(pair + 8, adj);
+    return pair;
+}
+
+# Print the topological build order, one package per line.
+fn cmd_order(dir) {
+    if (is_dir(str_from(dir)) == 0) {
+        _cli_say2("order: not a directory: ", dir);
+        return 1;
+    }
+    var sys = tbs_new(dir, "", "");
+    tbs_load_all_recipes(sys);
+    var g = _graph_from_recipes(sys);
+    var res = resolve_build_order(load64(g), load64(g + 8));
+    if (is_ok(res) == 0) {
+        println("order: dependency cycle detected");
+        return 1;
+    }
+    var order = result_unwrap(res);
+    var i = 0;
+    while (i < vec_len(order)) {
+        _putln(vec_get(order, i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Dry-run a build: validate all recipes, resolve order, print the plan,
+# then report that execution is not yet implemented. Exit 2.
+fn cmd_build(dir) {
+    if (is_dir(str_from(dir)) == 0) {
+        _cli_say2("build: not a directory: ", dir);
+        return 1;
+    }
+    var sys = tbs_new(dir, "", "");
+    tbs_load_all_recipes(sys);
+    var map = tbs_loaded_recipes(sys);
+    var keys = map_keys(map);
+    var bad = 0;
+    var i = 0;
+    while (i < vec_len(keys)) {
+        var r = map_get(map, vec_get(keys, i));
+        if (val_ok(validate_recipe(r)) == 0) {
+            _cli_say2("build: invalid recipe: ", pkg_name(recipe_package(r)));
+            bad = 1;
+        }
+        i = i + 1;
+    }
+    if (bad == 1) { return 1; }
+    var g = _graph_from_recipes(sys);
+    var res = resolve_build_order(load64(g), load64(g + 8));
+    if (is_ok(res) == 0) {
+        println("build: dependency cycle detected");
+        return 1;
+    }
+    var order = result_unwrap(res);
+    println("build plan (in order):");
+    i = 0;
+    while (i < vec_len(order)) {
+        _cli_say2("  ", vec_get(order, i));
+        i = i + 1;
+    }
+    println("build execution (configure/make/install) is not yet implemented (0.9.x)");
+    return 2;
+}
+
+# --- dispatch ---------------------------------------------------------
+
+# args = vec of cstr (the argv tail; args[0] is the subcommand).
+fn cli_dispatch(args) {
+    var n = vec_len(args);
+    if (n == 0) {
+        _print_usage();
+        return 0;
+    }
+    var cmd = vec_get(args, 0);
+    if (streq(cmd, "version") == 1) { return cmd_version(); }
+    if (streq(cmd, "help") == 1) { return cmd_help(); }
+    if (streq(cmd, "-h") == 1) { return cmd_help(); }
+    if (streq(cmd, "--help") == 1) { return cmd_help(); }
+    if (streq(cmd, "validate") == 1) {
+        var paths = vec_new();
+        var i = 1;
+        while (i < n) { vec_push(paths, vec_get(args, i)); i = i + 1; }
+        return cmd_validate(paths);
+    }
+    if (streq(cmd, "list") == 1) {
+        if (n < 2) { println("list: missing <dir>"); return 2; }
+        return cmd_list(vec_get(args, 1));
+    }
+    if (streq(cmd, "order") == 1) {
+        if (n < 2) { println("order: missing <dir>"); return 2; }
+        return cmd_order(vec_get(args, 1));
+    }
+    if (streq(cmd, "build") == 1) {
+        if (n < 2) { println("build: missing <dir>"); return 2; }
+        return cmd_build(vec_get(args, 1));
+    }
+    _cli_say2("unknown command: ", cmd);
+    _print_usage();
+    return 2;
+}

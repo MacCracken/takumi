@@ -11,6 +11,7 @@ include "src/package.cyr"
 include "src/ark_format.cyr"
 include "src/source.cyr"
 include "src/engine.cyr"
+include "src/cli.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
 fn pkg_vec(a, b, c, d, e, f) {
@@ -1406,7 +1407,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.8.3"), "builder stamp is takumi/0.8.3");
+    assert(streq(man_builder(cam_m), "takumi/0.8.4"), "builder stamp is takumi/0.8.4");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -1903,6 +1904,56 @@ fn main() {
     assert_eq(verify_source_hash(vpath, "short"), 0, "non-64-char expected -> 0");
     assert_eq(verify_source_hash("/tmp/takumi-nope-verify", vhash), 0 - 1, "missing file -> -1");
     sys_unlink(vpath);
+
+    # ===================================================================
+    # src/cli.cyr — dispatch + commands (exit-code assertions).
+    # ===================================================================
+    test_group("cli_dispatch: version/help/usage/unknown");
+    assert_eq(cli_dispatch(pkg_vec("version", 0, 0, 0, 0, 0)), 0, "version -> 0");
+    assert_eq(cli_dispatch(pkg_vec("help", 0, 0, 0, 0, 0)), 0, "help -> 0");
+    assert_eq(cli_dispatch(pkg_vec("--help", 0, 0, 0, 0, 0)), 0, "--help -> 0");
+    assert_eq(cli_dispatch(vec_new()), 0, "no args -> usage -> 0");
+    assert_eq(cli_dispatch(pkg_vec("frobnicate", 0, 0, 0, 0, 0)), 2, "unknown -> 2");
+    assert_eq(cli_dispatch(pkg_vec("list", 0, 0, 0, 0, 0)), 2, "list missing dir -> 2");
+    assert_eq(cli_dispatch(pkg_vec("order", 0, 0, 0, 0, 0)), 2, "order missing dir -> 2");
+    assert_eq(cli_dispatch(pkg_vec("build", 0, 0, 0, 0, 0)), 2, "build missing dir -> 2");
+    assert_eq(cli_dispatch(pkg_vec("validate", 0, 0, 0, 0, 0)), 2, "validate no files -> 2");
+
+    test_group("cli commands: fixtures");
+    var cli_dir = "/tmp/takumi-cli-test";
+    sys_unlink("/tmp/takumi-cli-test/zlib.cyml");
+    sys_unlink("/tmp/takumi-cli-test/openssl.cyml");
+    sys_rmdir(cli_dir);
+    assert_eq(sys_mkdir(cli_dir, 0x1FF), 0, "cli: mkdir dir");
+    var zsb = str_builder_new();
+    str_builder_add_cstr(zsb, "[package]\nname = \"zlib\"\nversion = \"1.3.1\"\n");
+    str_builder_add_cstr(zsb, "description = \"compression\"\nlicense = \"Zlib\"\n\n");
+    str_builder_add_cstr(zsb, "[source]\nurl = \"https://example.com/zlib-1.3.1.tar.gz\"\n");
+    str_builder_add_cstr(zsb, "sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\n");
+    var zc = str_cstr(str_builder_build(zsb));
+    assert(file_write_all("/tmp/takumi-cli-test/zlib.cyml", zc, strlen(zc)) > 0, "cli: write zlib.cyml");
+    var osb = str_builder_new();
+    str_builder_add_cstr(osb, "[package]\nname = \"openssl\"\nversion = \"3.5.2\"\n");
+    str_builder_add_cstr(osb, "description = \"tls\"\nlicense = \"Apache-2.0\"\n\n");
+    str_builder_add_cstr(osb, "[source]\nurl = \"https://example.com/openssl-3.5.2.tar.gz\"\n");
+    str_builder_add_cstr(osb, "sha256 = \"2222222222222222222222222222222222222222222222222222222222222222\"\n\n");
+    str_builder_add_cstr(osb, "[depends]\nruntime = [\"zlib\"]\n");
+    var oc = str_cstr(str_builder_build(osb));
+    assert(file_write_all("/tmp/takumi-cli-test/openssl.cyml", oc, strlen(oc)) > 0, "cli: write openssl.cyml");
+
+    assert_eq(cmd_validate(pkg_vec("/tmp/takumi-cli-test/openssl.cyml", 0, 0, 0, 0, 0)), 0, "validate valid recipe -> 0");
+    assert_eq(cmd_validate(pkg_vec("/tmp/takumi-cli-test/nope.cyml", 0, 0, 0, 0, 0)), 1, "validate missing -> 1");
+    assert_eq(cmd_list(cli_dir), 0, "list dir -> 0");
+    assert_eq(cmd_list("/tmp/takumi-cli-does-not-exist"), 1, "list missing dir -> 1");
+    assert_eq(cmd_order(cli_dir), 0, "order dir -> 0");
+    assert_eq(cmd_build(cli_dir), 2, "build dir -> 2 (execution pending)");
+    # via dispatch too
+    assert_eq(cli_dispatch(pkg_vec("order", cli_dir, 0, 0, 0, 0)), 0, "dispatch order -> 0");
+    assert_eq(cli_dispatch(pkg_vec("build", cli_dir, 0, 0, 0, 0)), 2, "dispatch build -> 2");
+
+    sys_unlink("/tmp/takumi-cli-test/zlib.cyml");
+    sys_unlink("/tmp/takumi-cli-test/openssl.cyml");
+    sys_rmdir(cli_dir);
 
     return assert_summary();
 }

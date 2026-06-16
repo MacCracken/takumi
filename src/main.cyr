@@ -12,14 +12,21 @@ include "src/package.cyr"
 include "src/ark_format.cyr"
 include "src/source.cyr"
 include "src/engine.cyr"
+include "src/cli.cyr"
 
-# Entry point: initialize the allocator and report readiness.
-# The Cyrius port is in progress; the CLI surface lands as engine
-# wiring is completed (Rust reference remains under rust-old/).
+# Entry point: initialize the allocator, read argv, and dispatch to the
+# CLI. The exit code is whatever the command returns (see cli_dispatch).
 fn main() {
     alloc_init();
-    println("takumi ready");
-    return 0;
+    args_init();
+    var ac = argc();
+    var args = vec_new();
+    var i = 1;
+    while (i < ac) {
+        vec_push(args, argv(i));
+        i = i + 1;
+    }
+    return cli_dispatch(args);
 }
 
 var r = main();

@@ -43,13 +43,20 @@
       `.tar.bz2` deferred — no xz/bzip2 codec in the stdlib yet.)
 - [x] Source SHA-256 verification (0.8.3) — `verify_source_hash` checks a
       staged tarball against the recipe's `source.sha256` before extraction.
+- [x] `main.cyr` CLI entry point (0.8.4) — `src/cli.cyr` `cli_dispatch` with
+      `validate` / `list` / `order` / `build` (dry-run plan) / `version` /
+      `help`; exit-code convention + testability split in
+      [ADR 0003](../adr/0003-cli-surface.md). Unblocks integration tests + CI.
 
 ## Backlog (0.9.x)
 
 - [ ] Source download (network fetch over HTTPS) — pairs with the existing
       `verify_source_hash` integrity check
-- [ ] Source extraction `.tar.xz` / `.tar.bz2` — blocked on an xz/lzma and
-      bzip2 codec in the stdlib
+- [ ] Source extraction `.tar.xz` / `.tar.bz2` — blocked on decode-only
+      xz/LZMA and bzip2 in `sankoch`; tracked on sankoch's roadmap
+      ("Requested by consumers — decode-only xz / bzip2"). When it lands,
+      add the `FORMAT_*` sniff branches in `src/source.cyr` and lift the
+      rejection.
 - [ ] Patch application
 - [ ] Build execution (shell-out to configure/make/install)
 - [ ] Fake-root installation directory management
@@ -57,10 +64,9 @@
       tracked on ark's roadmap (ark `docs/development/roadmap.md`, "`.ark`
       package format" backlog); conformance ref is `src/ark_format.cyr`
       + [ADR 0001](../adr/0001-ark-binary-format.md)
-- [ ] `main.cyr` CLI entry point (replaces Rust's `main.rs`)
-- [ ] Integration tests with real recipe files
-- [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, to
-      be validated end-to-end once the CLI lands
+- [ ] Integration tests with real recipe files (CLI now exists to drive them)
+- [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, now
+      drivable via the CLI (`takumi validate`/`list`/`order`)
 
 ## Future (post-0.9.x)
 

@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.4] - 2026-06-16
+
+The CLI entry point — `src/main.cyr` is no longer a stub. takumi is now a
+runnable tool, which unblocks the 0.9.x integration-test and CI items. 700
+tests (was 680), all passing.
+
+### Added
+
+- **`src/cli.cyr` — command-line surface** with `cli_dispatch(args)` and a
+  subcommand set:
+  - `validate <recipe.cyml>...` — parse + validate each recipe; prints
+    errors/warnings (exit 0 all valid, 1 any invalid/parse-fail).
+  - `list <dir>` — print `name  version` per recipe, sorted.
+  - `order <dir>` — print the topological build order.
+  - `build <dir>` — **dry-run**: validate all, resolve order, print the plan,
+    then report that execution (configure/make/install) is a 0.9.x feature
+    (exit 2).
+  - `version`, `help` / `-h` / `--help` / no-args usage.
+- **`main.cyr`** now marshals `argv` (via `args_init`/`argc`/`argv`) into a vec
+  and calls `cli_dispatch`, exiting with its return code.
+- Exit-code convention (0 ok / 1 operational error / 2 usage or
+  not-implemented) and the `cli_dispatch` testability split are recorded in
+  [ADR 0003](docs/adr/0003-cli-surface.md).
+- Tests: a `cli` group asserting exit codes via `cli_dispatch` with synthetic
+  arg vecs (version/help/usage/unknown/missing-arg) and `cmd_*` against `.cyml`
+  fixtures (valid→0, malformed→1, missing dir→1, list/order/build over a
+  2-recipe chain).
+
+### Changed
+
+- `src/main.cyr` no longer prints `"takumi ready"`; it dispatches the CLI.
+- Builder stamp → `takumi/0.8.4`; new `takumi_version()` in `src/cli.cyr` joins
+  the version-sync set (`VERSION` / `cyrius.cyml` / builder stamp).
+- Roadmap: `main.cyr` CLI entry point moved to Completed; integration tests +
+  CI noted as unblocked.
+
 ## [0.8.3] - 2026-06-16
 
 Source integrity & file fidelity — more 0.9.x I/O work pulled into the 0.8.x

@@ -46,9 +46,20 @@ logical sections:
 | `BuildStatus` | Build state machine: Pending through Complete/Failed |
 | `BuildLogEntry` | Timestamped log entry for build auditing |
 
+## Entry point (`src/main.cyr` → `src/cli.cyr`)
+
+`main` initializes the allocator, reads `argv`, and calls `cli_dispatch(args)`,
+which returns the process exit code. Commands: `validate <recipe.cyml>...`,
+`list <dir>`, `order <dir>`, `build <dir>` (dry-run plan; execution is 0.9.x),
+`version`, `help`. Dispatch is a plain function over a vec of cstrs (no `argv`
+access) so every command is unit-testable by exit code. Exit codes: `0` ok,
+`1` operational error, `2` usage / not-implemented. See
+[ADR 0003](../adr/0003-cli-surface.md).
+
 ## Data Flow
 
 ```
+0. CLI:      argv -> cli_dispatch -> command (validate/list/order/build/...)
 1. Load:     .cyml files -> CymlDoc (cyml_parse) -> TOML header (toml_parse) -> BuildRecipe structs
 2. Validate: BuildRecipe -> Result<warnings> (reject malformed early)
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
