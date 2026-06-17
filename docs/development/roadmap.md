@@ -72,10 +72,13 @@
       loopback HTTP server (full fetch → verify → extract → build → package);
       128 MiB response cap.
 
+- [x] Build cwd = extracted tarball root (0.9.3) — `_build_cwd` descends into
+      the archive's single top-level dir so `./configure`/`make` run in the
+      source root; makes `build --execute` correct on real recipes.
+
 ## Backlog (0.9.x)
 
-- [ ] Tarball-root → build-cwd refinement (use the archive's single top-level
-      dir as the build cwd); streaming download for sources > 128 MiB
+- [ ] Streaming download for sources > 128 MiB (sandhi buffers in memory)
 - [ ] Patch application
 - [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
       (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.

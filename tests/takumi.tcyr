@@ -1484,7 +1484,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.2"), "builder stamp is takumi/0.9.2");
+    assert(streq(man_builder(cam_m), "takumi/0.9.3"), "builder stamp is takumi/0.9.3");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -2135,6 +2135,19 @@ fn main() {
     var skip_recipe = recipe_new(be_pkg, be_src, be_dep, skip_bld, be_sec);
     var skip_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", skip_recipe), 1000);
     assert_eq(ble_status(skip_entry), BS_COMPLETE, "skips empty configure, runs true steps");
+
+    test_group("build: _build_cwd descends into a single tarball-root dir");
+    var cw_ctx = stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", st_recipe);
+    var cw_src = bcx_source_dir(cw_ctx);
+    # empty source dir -> cwd is the source dir itself
+    assert(streq(_build_cwd(cw_ctx), cw_src), "empty src -> source dir");
+    # single top-level dir (the conventional tarball layout) -> descend into it
+    var cw_root = _join2(cw_src, "pkg-1.0");
+    assert_eq(sys_mkdir(cw_root, 0x1FF), 0, "mk single root dir");
+    assert(streq(_build_cwd(cw_ctx), cw_root), "single root dir -> descend");
+    # a second top-level entry -> stay at the source dir
+    assert_eq(sys_mkdir(_join2(cw_src, "extra"), 0x1FF), 0, "mk second entry");
+    assert(streq(_build_cwd(cw_ctx), cw_src), "multiple entries -> source dir");
 
     exec_vec(rmclean);
 

@@ -80,7 +80,8 @@ if command -v python3 >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
     echo 'description = "loopback fetch demo"'; echo 'license = "MIT"'; echo
     echo '[source]'; echo 'url = "http://127.0.0.1:8097/demo-1.0.tar.gz"'
     echo "sha256 = \"$SHA\""; echo
-    echo '[build]'; echo 'install = "mkdir -p $PKG/usr/share && cp pkgsrc/README $PKG/usr/share/demo-README"'
+    # cwd is the extracted tarball root (pkgsrc/), so README is at ./README.
+    echo '[build]'; echo 'install = "mkdir -p $PKG/usr/share && cp README $PKG/usr/share/demo-README"'
   } > "$REC/demo.cyml"
   ( cd "$SRV" && python3 -m http.server 8097 >/dev/null 2>&1 & echo $! > /tmp/takumi-it-srv.pid )
   sleep 1

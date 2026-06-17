@@ -92,7 +92,8 @@ entry types abort). Network download stays in 0.9.x; the safety model is in
 ### Build execution (`src/build.cyr`)
 
 `exec_build(ctx, started)` runs the recipe's six `[build]` phases via
-`/bin/sh -c` (env baked into a single-quoted prelude: `PKG`/`DESTDIR` =
+`/bin/sh -c` — inside the extracted source root (`_build_cwd` descends into the
+tarball's single top-level dir) (env baked into a single-quoted prelude: `PKG`/`DESTDIR` =
 fake-root, `CFLAGS`/`LDFLAGS`, `MAKEFLAGS=-j1`, `LC_ALL=C`, `umask 022`),
 advancing `BuildStatus`, fail-closed, returning a `BuildLogEntry`. The whole
 build runs **unprivileged** and writes only into the DESTDIR fake-root — no

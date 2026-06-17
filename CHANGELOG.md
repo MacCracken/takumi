@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.3] - 2026-06-17
+
+Build cwd = the extracted tarball root — the fix that makes `build --execute`
+correct on real recipes. 775 tests (was 770).
+
+### Changed
+
+- **`exec_build` runs steps inside the extracted source root.** Tarballs
+  conventionally unpack to a single top-level directory (e.g. `hello-2.12.1/`);
+  `_build_cwd` now descends into it when the source dir holds exactly one
+  entry and it's a directory (else uses the source dir, falling back to the
+  build dir). Previously steps ran in the parent, so `./configure`/`make`
+  couldn't find the source — this is what makes from-source recipes actually
+  build. The cwd is computed once per build and threaded to every step.
+- Builder stamp + `takumi_version()` → 0.9.3.
+
+### Added
+
+- Tests: `_build_cwd` (empty src → source dir; single root dir → descend;
+  multiple top-level entries → source dir). The loopback integration build now
+  exercises it — its recipe installs from `./README` relative to the extracted
+  root.
+
 ## [0.9.2] - 2026-06-17
 
 Source download over HTTPS — completing the `fetch → verify → extract → build

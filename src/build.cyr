@@ -94,17 +94,27 @@ fn _build_wrap(step, cwd, prelude) {
     return str_cstr(str_builder_build(sb));
 }
 
-# Run a single build step. Skips (returns 0) when the step is absent/empty.
-# cwd is the source dir when present, else the build dir.
-fn _run_step(ctx, step) {
+# The build cwd. A recipe's steps expect to run inside the extracted source
+# root, and tarballs conventionally unpack to a single top-level directory
+# (e.g. `hello-2.12.1/`). So if the source dir holds exactly one entry and it
+# is a directory, descend into it; otherwise (no source, multiple top-level
+# entries, or a non-dir) use the source dir, falling back to the build dir.
+fn _build_cwd(ctx) {
+    var sd = bcx_source_dir(ctx);
+    if (sd == 0) { return bcx_build_dir(ctx); }
+    if (is_dir(str_from(sd)) == 0) { return bcx_build_dir(ctx); }
+    var entries = dir_list(str_from(sd));
+    if (vec_len(entries) == 1) {
+        var sub = path_join(str_from(sd), vec_get(entries, 0));
+        if (is_dir(sub) == 1) { return str_cstr(sub); }
+    }
+    return sd;
+}
+
+# Run a single build step in `cwd`. Skips (returns 0) when step is absent/empty.
+fn _run_step(ctx, step, cwd) {
     if (step == 0) { return 0; }
     if (strlen(step) == 0) { return 0; }
-    var cwd = bcx_source_dir(ctx);
-    if (cwd == 0) {
-        cwd = bcx_build_dir(ctx);
-    } else {
-        if (is_dir(str_from(cwd)) == 0) { cwd = bcx_build_dir(ctx); }
-    }
     var prelude = _build_env_prelude(ctx);
     var wrapped = _build_wrap(step, cwd, prelude);
     var args = vec_new();
@@ -164,20 +174,23 @@ fn exec_build(ctx, started) {
     var bld = recipe_build(bcx_recipe(ctx));
     var pkgname = pkg_name(recipe_package(bcx_recipe(ctx)));
 
+    # Steps run inside the extracted source root (single-top-level-dir aware).
+    var cwd = _build_cwd(ctx);
+
     # Phases in order. Status mapping (informational): pre_build+configure ->
     # CONFIGURING, make -> BUILDING, check -> TESTING, install+post_install ->
     # INSTALLING. Stop at the first non-zero exit (fail-closed).
-    var rc = _run_step(ctx, bld_pre_build(bld));
+    var rc = _run_step(ctx, bld_pre_build(bld), cwd);
     if (rc != 0) { return _build_fail(pkgname, "pre_build", rc, started); }
-    rc = _run_step(ctx, bld_configure(bld));
+    rc = _run_step(ctx, bld_configure(bld), cwd);
     if (rc != 0) { return _build_fail(pkgname, "configure", rc, started); }
-    rc = _run_step(ctx, bld_make(bld));
+    rc = _run_step(ctx, bld_make(bld), cwd);
     if (rc != 0) { return _build_fail(pkgname, "make", rc, started); }
-    rc = _run_step(ctx, bld_check(bld));
+    rc = _run_step(ctx, bld_check(bld), cwd);
     if (rc != 0) { return _build_fail(pkgname, "check", rc, started); }
-    rc = _run_step(ctx, bld_install(bld));
+    rc = _run_step(ctx, bld_install(bld), cwd);
     if (rc != 0) { return _build_fail(pkgname, "install", rc, started); }
-    rc = _run_step(ctx, bld_post_install(bld));
+    rc = _run_step(ctx, bld_post_install(bld), cwd);
     if (rc != 0) { return _build_fail(pkgname, "post_install", rc, started); }
 
     var end = clock_epoch_secs();

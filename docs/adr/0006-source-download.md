@@ -64,9 +64,9 @@ throughout. `url` sources are https-only (validator-enforced).
 
 - **Response cap 128 MiB** (sandhi in-memory pre-alloc); streaming-to-disk for
   very large sources is future work.
-- **Tarball root dir**: extraction lands the archive's top-level dir under the
-  source dir; build cwd is the source dir. Recipes whose steps assume cwd =
-  extracted-root may need a "single top-level dir → cwd" refinement (follow-up).
+- **Tarball root dir**: resolved in 0.9.3 — `exec_build` (`_build_cwd`) descends
+  into the archive's single top-level dir, so build steps run inside the
+  extracted source root.
 - GitHub resolution uses `releases/latest` only (no tag pinning yet); `*`/`?`
   globs over asset names.
 - No mirror/fallback URLs, no resume, no checksum-TOFU.
