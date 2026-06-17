@@ -62,8 +62,10 @@ throughout. `url` sources are https-only (validator-enforced).
 
 ## Known limitations / follow-ups
 
-- **Response cap 128 MiB** (sandhi in-memory pre-alloc); streaming-to-disk for
-  very large sources is future work.
+- ~~**Response cap 128 MiB** (sandhi in-memory pre-alloc); streaming-to-disk for
+  very large sources is future work.~~ **Resolved in 0.9.7** — the artifact now
+  streams to disk via `sandhi_http_download`; there is no in-memory cap. See
+  [ADR 0010](0010-streaming-download.md).
 - **Tarball root dir**: resolved in 0.9.3 — `exec_build` (`_build_cwd`) descends
   into the archive's single top-level dir, so build steps run inside the
   extracted source root.

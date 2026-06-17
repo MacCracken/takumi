@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.7] - 2026-06-17
+
+Streaming source download — the artifact is now streamed straight to disk, so
+source size is no longer capped at 128 MiB in memory. Toolchain → 6.2.19
+(sandhi 1.6.5). 814 tests.
+
+### Changed
+
+- **Source artifacts stream to disk** (`src/fetch.cyr`,
+  `_sandhi_download_to_file`). Replaced the buffered `sandhi_http_get_opts`
+  (which pre-allocates the whole body via `max_response_bytes`, capping us at
+  128 MiB) with sandhi's streaming `sandhi_http_download(url, fd, opts)`: the
+  body is flushed to the destination fd as it arrives and never held whole in
+  memory. Source size is now bounded only by free disk and the 10-minute
+  `total_ms` wall clock; the resident set during a fetch is fixed regardless of
+  size. The GitHub release JSON is still fetched buffered (it's tiny). Model in
+  [ADR 0010](docs/adr/0010-streaming-download.md).
+- **Toolchain pin → 6.2.19** (re-vendored `lib/`, sandhi 1.6.3 → 1.6.5 — which
+  ships the `sandhi_http_download` API takumi requested as first consumer in
+  0.9.2). Build is drift-free.
+- Removed `FETCH_MAX_BYTES` (the artifact path no longer has an in-memory cap);
+  `FETCH_TOTAL_MS` (600 s) is the download backstop. Builder stamp +
+  `takumi_version()` → 0.9.7.
+
+### Verified
+
+- A **180 MiB** source (188,753,920 bytes — over the old 134,217,728 cap)
+  fetched → sha256-verified (exact match) → extracted → built → packaged
+  end-to-end over a loopback server; the buffered path would have failed at this
+  size. The existing loopback fetch / patch / PAX integration cases now exercise
+  the streaming path (it's the only artifact-download path).
+
+### Security
+
+- Unchanged verify-before-use: the streamed file is sha256-checked against the
+  recipe's pinned hash before extraction. Native TLS, no libssl dependency.
+
 ## [0.9.6] - 2026-06-17
 
 PAX extended header support — `extract_archive` now parses POSIX.1-2001 PAX

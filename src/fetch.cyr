@@ -2,9 +2,16 @@
 #
 # Fetches a recipe's source to a local file so the existing
 # verify_source_hash -> extract_archive -> build pipeline can run. sandhi
-# is the stdlib HTTP/1.1+2 client over TLS (libssl via fdlopen): it does
-# the TLS handshake, follows redirects (GitHub release -> CDN), caps the
-# response, and exposes dotted-path JSON for resolving release assets.
+# is the stdlib HTTP/1.1+2 client over TLS: it does the TLS handshake,
+# follows redirects (GitHub release -> CDN), and exposes dotted-path JSON
+# for resolving release assets.
+#
+# The source artifact is fetched with sandhi's STREAMING download
+# (`sandhi_http_download`): the response body is written straight to the
+# destination fd without ever buffering the whole body in memory, so source
+# size is bounded only by disk + the wall-clock timeout — not by a fixed
+# in-memory cap (lifted in 0.9.7; see docs/adr/0010-streaming-download.md).
+# The small GitHub release JSON is still fetched buffered (it's tiny).
 #
 # TLS uses sandhi's pure-Cyrius native backend (`sandhi_tls_use_native`), so
 # there is no libssl/OpenSSL runtime dependency.
@@ -16,18 +23,24 @@
 
 enum FetchErr {
     FETCH_ERR_NO_SOURCE = 1;   # LOCAL kind — nothing to fetch (caller skips)
-    FETCH_ERR_HTTP = 2;        # non-200, connection, or TLS failure
-    FETCH_ERR_WRITE = 3;       # could not write the destination file
+    FETCH_ERR_HTTP = 2;        # non-2xx, connection, or TLS failure
+    FETCH_ERR_WRITE = 3;       # could not open/write the destination file
     FETCH_ERR_NO_ASSET = 4;    # github_release: no asset matched the pattern
     FETCH_ERR_UNSUPPORTED = 5; # unknown source kind
 }
 
-# Caps on the in-memory response. sandhi pre-allocates max_response_bytes, so
-# the artifact cap is 128 MiB (covers virtually all source tarballs; larger
-# values exhaust the allocator -> request fails). JSON release list: 4 MiB.
+# The artifact download streams to disk (no in-memory cap; bounded by the
+# total-ms wall clock). Only the GitHub release JSON is buffered — it's
+# small, so a 4 MiB cap is plenty.
 enum FetchLimit {
-    FETCH_MAX_BYTES = 134217728;
     FETCH_MAX_JSON = 4194304;
+}
+
+# Wall-clock ceiling for a single source download (10 min). The streaming
+# path has no byte cap, so the timeout is the backstop against a runaway
+# transfer.
+enum FetchTimeout {
+    FETCH_TOTAL_MS = 600000;
 }
 
 # Glob match with `*` (any run) and `?` (any one). Linear with backtracking.
@@ -81,19 +94,33 @@ fn _glob_match(pat, s) {
     return 1;
 }
 
-# GET `url` over HTTPS into `dest`. Returns 0, or 0 - FETCH_ERR_*.
-fn _sandhi_get_to_file(url, dest) {
+# Stream-download `url` over HTTPS straight to `dest`. The body is flushed
+# to the destination fd as it arrives — never buffered whole — so the source
+# size is unbounded (no in-memory cap) while the resident set stays fixed.
+# Redirects (GitHub release -> CDN) and TLS policy are honored; the only
+# size backstop is the total-ms wall clock. Returns 0, or 0 - FETCH_ERR_*.
+fn _sandhi_download_to_file(url, dest) {
     var opts = sandhi_http_options_new();
     sandhi_http_options_follow_redirects(opts, 1);
     sandhi_http_options_max_hops(opts, 10);
-    sandhi_http_options_max_response_bytes(opts, FETCH_MAX_BYTES);
-    sandhi_http_options_total_ms(opts, 600000);
-    var r = sandhi_http_get_opts(url, 0, opts);
+    sandhi_http_options_total_ms(opts, FETCH_TOTAL_MS);
+
+    # 0644; O_WRONLY|O_CREAT|O_TRUNC. file_open remaps the flags per target.
+    var fd = file_open(dest, O_WRONLY | O_CREAT | O_TRUNC, 420);
+    if (fd < 0) { return 0 - FETCH_ERR_WRITE; }
+    var r = sandhi_http_download(url, fd, opts);
+    file_close(fd);
+
     if (r == 0) { return 0 - FETCH_ERR_HTTP; }
-    if (sandhi_http_status(r) != 200) { return 0 - FETCH_ERR_HTTP; }
-    var body = sandhi_http_body(r);
-    var len = sandhi_http_body_len(r);
-    if (file_write_all(dest, body, len) != len) { return 0 - FETCH_ERR_WRITE; }
+    var st = sandhi_download_status(r);
+    if (st < 200 || st >= 300) { return 0 - FETCH_ERR_HTTP; }
+    # A 2xx that still errored mid-stream: a destination-write failure surfaces
+    # as INTERNAL (our fd sink returned <0); anything else is a transport fault.
+    var err = sandhi_download_err(r);
+    if (err != 0) {
+        if (err == SANDHI_ERR_INTERNAL) { return 0 - FETCH_ERR_WRITE; }
+        return 0 - FETCH_ERR_HTTP;
+    }
     return 0;
 }
 
@@ -163,10 +190,10 @@ fn fetch_source(src, dest_path) {
     if (k == SRC_KIND_GITHUB) {
         var url = _gh_resolve_asset_url(src_gh_repo(src), src_gh_asset(src));
         if (url == 0) { return 0 - FETCH_ERR_NO_ASSET; }
-        return _sandhi_get_to_file(url, dest_path);
+        return _sandhi_download_to_file(url, dest_path);
     }
     if (k == SRC_KIND_URL) {
-        return _sandhi_get_to_file(src_url(src), dest_path);
+        return _sandhi_download_to_file(src_url(src), dest_path);
     }
     return 0 - FETCH_ERR_UNSUPPORTED;
 }

@@ -66,8 +66,9 @@ fi
 rm -rf /tmp/takumi-build /tmp/takumi-it-local
 
 # Full fetch -> verify -> extract -> build -> package over a LOOPBACK server
-# (no external network; proves the real download path end to end). Needs
-# python3 + tar; skipped otherwise.
+# (no external network; proves the real download path end to end). The fetch
+# now streams the body straight to disk (sandhi_http_download, 0.9.7), so this
+# exercises the streaming path. Needs python3 + tar; skipped otherwise.
 if command -v python3 >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
   echo "== build --execute over loopback HTTP (real fetch) =="
   SRV=/tmp/takumi-it-srv; REC=/tmp/takumi-it-rec

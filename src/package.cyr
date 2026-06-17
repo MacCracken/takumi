@@ -221,7 +221,7 @@ fn sum_installed_size(entries) {
 # parameter keeps tests deterministic; the real build pipeline
 # passes `clock_epoch_secs()` from lib/chrono.cyr.
 #
-# The builder string is hardcoded "takumi/0.9.6" — it's takumi's own
+# The builder string is hardcoded "takumi/0.9.7" — it's takumi's own
 # identity stamp in every manifest, not a tunable.
 # ---------------------------------------------------------------------------
 
@@ -241,7 +241,7 @@ fn create_ark_manifest(recipe, entries, default_arch_cstr, build_date_secs) {
     man_set_arch(m, arch);
     man_set_size_installed(m, sum_installed_size(entries));
     man_set_build_date(m, build_date_secs);
-    man_set_builder(m, "takumi/0.9.6");
+    man_set_builder(m, "takumi/0.9.7");
     man_set_source_url(m, src_url(src));
     man_set_source_hash(m, src_sha256(src));
     man_set_license(m, pkg_license(pkg));

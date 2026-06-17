@@ -83,6 +83,9 @@ package with no upstream). `fetch_source` (`src/fetch.cyr`, HTTPS via stdlib
 `sandhi` with the native TLS backend) downloads `url`/`github_release` sources —
 resolving a GitHub asset via the releases API + glob match — then the hard
 sha256 gate runs before extraction ([ADR 0006](../adr/0006-source-download.md)).
+The artifact is **streamed** straight to disk (`sandhi_http_download`), so source
+size is bounded only by disk + a wall-clock timeout, not by a fixed in-memory
+cap ([ADR 0010](../adr/0010-streaming-download.md)).
 `verify_source_hash(path, expected_sha256)` confirms a staged tarball matches the
 recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar`,
 `.tar.gz`, `.tar.xz`, and `.tar.bz2` (all via stdlib `sankoch` — gzip

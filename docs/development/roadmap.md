@@ -102,13 +102,15 @@
       Verified byte-identical to system `tar` on real OpenSSL/CPython tarballs.
       (GNU `L`/`K` long-name headers deferred — not seen in any sampled tarball.)
 
-## Backlog (0.9.x)
+- [x] Streaming source download (0.9.7) — the artifact streams straight to disk
+      via sandhi's `sandhi_http_download(url, fd, opts)` (shipped in sandhi 1.6.5
+      / Cyrius 6.2.19; takumi was the first consumer ask from 0.9.2). Source size
+      is no longer capped at 128 MiB in memory — bounded only by disk + the
+      total-ms wall clock, with a fixed resident set. Model in
+      [ADR 0010](../adr/0010-streaming-download.md). Verified live with a 180 MiB
+      source (over the old cap).
 
-- [ ] Streaming download for sources > 128 MiB — blocked on a sandhi
-      download-to-fd / body-sink API (sandhi's only streaming is SSE; the
-      buffered GET pre-allocates the body, capping us at 128 MiB). Tracked on
-      sandhi's roadmap ("Wait-for-second-consumer-ask" → "Streaming GET to an
-      fd"); wire it once it lands. takumi is the first consumer ask.
+## Backlog (0.9.x)
 - [ ] GNU long-name/long-link tar headers (`L` = 76, `K` = 75) — the entry's
       data block carries the next entry's long name/linkname (not PAX records).
       Deferred from 0.9.6: appeared in none of the sampled real tarballs (PAX is
