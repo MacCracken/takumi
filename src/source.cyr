@@ -9,6 +9,9 @@
 # Network download is intentionally NOT here (TLS surface; 0.9.x). Supported
 # envelopes: plain `.tar`, `.tar.gz`, `.tar.xz`, and `.tar.bz2` — all via
 # stdlib `sankoch` (xz/bzip2 decode landed in sankoch 2.4.x / cyrius 6.2.16).
+# Both the POSIX `ustar` and the pre-POSIX `v7` tar layouts are accepted:
+# headers are validated by checksum, not by the `ustar` magic (real GNU
+# release tarballs are v7 and carry no magic — 0.9.5).
 #
 # Security model and the path-guard rationale are recorded in
 # docs/adr/0002-source-extraction-safety.md. The guards are fail-closed:
@@ -20,7 +23,7 @@
 enum SrcErr {
     SRC_ERR_OPEN = 1;        # cannot open / stat / short read
     SRC_ERR_TOO_LARGE = 2;   # archive or gunzip output exceeds the cap
-    SRC_ERR_BAD_MAGIC = 3;   # not a known envelope and not ustar
+    SRC_ERR_BAD_MAGIC = 3;   # first block isn't a valid tar header (checksum)
     SRC_ERR_DECOMPRESS = 4;  # sankoch decompress failed (gzip/xz/bzip2)
     SRC_ERR_TRUNCATED = 5;   # header < 512 or data shorter than its size
     SRC_ERR_BAD_HEADER = 6;  # checksum / octal / magic check failed
@@ -370,11 +373,15 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
             }
         }
     }
-    # Need at least one block. A real first header must carry the ustar
-    # magic; an empty archive is just zero blocks (no magic) and is fine.
+    # Need at least one block. A real first header is validated by its
+    # checksum (not the `ustar` magic): pre-POSIX **v7** tar carries no magic
+    # at offset 257, yet real-world tarballs use it (e.g. GNU release tarballs
+    # like GNU hello). The header checksum is the reliable "this is a tar"
+    # signal and covers both ustar and v7 (it predates the magic field). An
+    # empty archive is just zero blocks and is fine.
     if (tar_len < 512) { return 0 - SRC_ERR_BAD_MAGIC; }
     if (_is_zero_block(tar_buf) != 1) {
-        if (memeq(tar_buf + 257, "ustar", 5) != 1) { return 0 - SRC_ERR_BAD_MAGIC; }
+        if (_tar_checksum_ok(tar_buf) != 1) { return 0 - SRC_ERR_BAD_MAGIC; }
     }
 
     # 3. Ensure destination exists.
@@ -392,8 +399,10 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
             if (zero_run >= 2) { ended = 1; break; }
         } else {
             zero_run = 0;
+            # The header checksum validates the block (it works for ustar and
+            # the magic-less v7 format alike); the `ustar` magic is not
+            # required. See the first-block note above.
             if (_tar_checksum_ok(block) != 1) { return 0 - SRC_ERR_BAD_HEADER; }
-            if (memeq(block + 257, "ustar", 5) != 1) { return 0 - SRC_ERR_BAD_HEADER; }
             var typ = load8(block + 156) & 0xFF;
             var size = _parse_octal(block + 124, 12);
             if (size < 0) { return 0 - SRC_ERR_BAD_HEADER; }
@@ -404,6 +413,14 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
             else { if (typ == 53) { kind = 1; }
             else { if (typ == 50) { kind = 2; }
             else { return 0 - SRC_ERR_UNSUPPORTED; } } }
+
+            # Pure v7 tar has no directory typeflag — directories are regular
+            # entries whose name ends in '/'. Reclassify so they `mkdir`
+            # instead of being written as zero-byte files.
+            if (kind == 0) {
+                var fl = strlen(full);
+                if (fl > 0) { if (load8(full + fl - 1) == 47) { kind = 1; } }
+            }
 
             if (_tar_path_is_safe(full) != 1) { return 0 - SRC_ERR_UNSAFE_PATH; }
             pos = pos + 512;

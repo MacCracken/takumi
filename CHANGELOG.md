@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.5] - 2026-06-17
+
+v7 (pre-POSIX) tar support — `extract_archive` now accepts the magic-less v7 tar
+layout that real GNU release tarballs use, by gating header acceptance on the
+checksum instead of the `ustar` magic. 795 tests (was 782).
+
+### Fixed
+
+- **`extract_archive` rejected real GNU release tarballs.** GNU hello 2.12.1 (and
+  other GNU releases) ship as pre-POSIX **v7** tar — no `ustar` magic at offset
+  257 — so extraction failed with `SRC_ERR_BAD_MAGIC` before verify/patch/build
+  could run. Surfaced while confirming patch application (0.9.4) against a real
+  project.
+
+### Changed
+
+- **Header validity is gated on the checksum, not the `ustar` magic**
+  (`src/source.cyr`). The header checksum (offset 148) is a stronger, magic-
+  independent "this is a tar header" signal and predates the magic field; it
+  covers both `ustar` and v7. The initial sniff and the per-block loop now use
+  `_tar_checksum_ok` and ignore the magic. v7 directories (regular typeflag with
+  a trailing-slash name — v7 has no dir typeflag) are reclassified as
+  directories. Security model + rationale in
+  [ADR 0008](docs/adr/0008-v7-tar-checksum-gated-headers.md) (amends
+  [ADR 0002](docs/adr/0002-source-extraction-safety.md)).
+- Builder stamp + `takumi_version()` → 0.9.5.
+
+### Added
+
+- Tests: an in-memory v7 fixture builder (`_tb_finalize_v7` / `_tb_emit_file_v7`,
+  checksum-valid + magic-less) — a v7 archive extracts, a pure-v7 trailing-slash
+  directory is created as a directory, and a 512-byte non-tar block is still
+  rejected by the checksum gate (no security regression).
+
+### Verified
+
+- Full pipeline confirmed live against the **real** `hello-2.12.1.tar.gz` (v7,
+  magic@257 empty): fetch → verify (sha256) → extract → `patching file
+  src/hello.c` → build → package — the case that failed before this release.
+
+### Known limitations
+
+- PAX (`x`/`g`) and GNU long-name (`L`/`K`) extended headers remain unsupported
+  (`SRC_ERR_UNSUPPORTED`).
+
 ## [0.9.4] - 2026-06-17
 
 Patch application — a recipe's `source.patches` are now applied to the extracted

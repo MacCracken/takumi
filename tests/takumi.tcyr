@@ -141,6 +141,45 @@ fn _tb_emit_symlink(sb, name, target) {
     return 0;
 }
 
+# v7 (pre-POSIX) finalize: a valid header checksum but NO `ustar` magic
+# (offset 257 stays zero). Mirrors real GNU release tarballs.
+fn _tb_finalize_v7(block) {
+    var i = 148;
+    while (i < 156) { store8(block + i, 32); i = i + 1; }
+    var sum = 0;
+    i = 0;
+    while (i < 512) { sum = sum + (load8(block + i) & 0xFF); i = i + 1; }
+    var j = 5;
+    var v = sum;
+    while (j >= 0) {
+        store8(block + 148 + j, 48 + (v & 7));
+        v = v / 8;
+        j = j - 1;
+    }
+    store8(block + 154, 0);
+    store8(block + 155, 32);
+    return 0;
+}
+
+# Append a v7 header + (512-padded) payload — checksum-valid, magic-less.
+fn _tb_emit_file_v7(sb, name, typeflag, size, data) {
+    var b = _tb_block();
+    _tb_put(b, 0, name);
+    store8(b + 156, typeflag);
+    _tb_put_size(b, size);
+    _tb_finalize_v7(b);
+    _tb_app(sb, b, 512);
+    if (size > 0) {
+        _tb_app(sb, data, size);
+        var pad = ((size + 511) / 512) * 512 - size;
+        if (pad > 0) {
+            var z = alloc(pad);
+            _tb_app(sb, z, pad);
+        }
+    }
+    return 0;
+}
+
 # Two zero blocks = end-of-archive terminator.
 fn _tb_terminator(sb) {
     var z = alloc(1024);
@@ -1484,7 +1523,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.4"), "builder stamp is takumi/0.9.4");
+    assert(streq(man_builder(cam_m), "takumi/0.9.5"), "builder stamp is takumi/0.9.5");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -1832,6 +1871,48 @@ fn main() {
     assert_eq(file_read_all("/tmp/takumi-extract-out/sub/a.txt", xrb2, 64), 2, "sub/a.txt size 2");
     assert_eq(sys_access("/tmp/takumi-extract-out/lnk", 0), 0, "symlink created");
 
+    test_group("extract_archive: v7 tar (no ustar magic, checksum-gated)");
+    sys_unlink("/tmp/takumi-extract-out/v7.txt");
+    sys_unlink("/tmp/takumi-extract-out/v7d/inner.txt");
+    var v7sb = str_builder_new();
+    # '5'-typeflag dir (old-GNU style) + a regular file under it...
+    _tb_emit_file_v7(v7sb, "v7d/", 53, 0, "");
+    _tb_emit_file_v7(v7sb, "v7d/inner.txt", 48, 4, "deep");
+    # ...and a top-level regular file, all magic-less.
+    _tb_emit_file_v7(v7sb, "v7.txt", 48, 6, "v7file");
+    _tb_terminator(v7sb);
+    assert(_tb_write(v7sb, xarc) > 0, "write v7 fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "v7 extract -> 0 (no magic, checksum ok)");
+    var v7rb = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/v7.txt", v7rb, 64), 6, "v7.txt size 6");
+    assert_eq(memeq(v7rb, "v7file", 6), 1, "v7.txt contents");
+    var v7rb2 = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/v7d/inner.txt", v7rb2, 64), 4, "v7d/inner.txt size 4");
+    assert_eq(memeq(v7rb2, "deep", 4), 1, "v7d/inner.txt contents");
+
+    test_group("extract_archive: pure-v7 dir (regular typeflag, trailing slash)");
+    sys_unlink("/tmp/takumi-extract-out/pured/f.txt");
+    var pvsb = str_builder_new();
+    # pure v7 has no dir typeflag: a '0'/NUL entry whose name ends in '/'.
+    _tb_emit_file_v7(pvsb, "pured/", 0, 0, "");
+    _tb_emit_file_v7(pvsb, "pured/f.txt", 0, 3, "abc");
+    _tb_terminator(pvsb);
+    assert(_tb_write(pvsb, xarc) > 0, "write pure-v7 fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "pure-v7 extract -> 0 (trailing-slash dir)");
+    assert_eq(sys_access("/tmp/takumi-extract-out/pured", 0), 0, "pure-v7 dir created (not a file)");
+    var pvrb = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/pured/f.txt", pvrb, 64), 3, "pured/f.txt size 3");
+    assert_eq(memeq(pvrb, "abc", 3), 1, "pured/f.txt contents");
+
+    test_group("extract_archive: 512-byte non-tar block rejected (checksum gate)");
+    # A full 512-byte block with neither ustar magic nor a valid checksum must
+    # still be rejected — the checksum is the gate that replaced the magic.
+    var ntblk = alloc(512);
+    var nti = 0;
+    while (nti < 512) { store8(ntblk + nti, 88); nti = nti + 1; }  # all 'X'
+    assert(file_write_all(xarc, ntblk, 512) > 0, "write 512B non-tar block");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_BAD_MAGIC, "512B garbage -> BAD_MAGIC");
+
     test_group("extract_archive: empty file + 513-byte spill");
     sys_unlink("/tmp/takumi-extract-out/empty");
     sys_unlink("/tmp/takumi-extract-out/big");
@@ -2009,7 +2090,12 @@ fn main() {
     sys_unlink("/tmp/takumi-extract-out/g.txt");
     sys_unlink("/tmp/takumi-extract-out/empty");
     sys_unlink("/tmp/takumi-extract-out/big");
+    sys_unlink("/tmp/takumi-extract-out/v7.txt");
+    sys_unlink("/tmp/takumi-extract-out/v7d/inner.txt");
+    sys_unlink("/tmp/takumi-extract-out/pured/f.txt");
     sys_rmdir("/tmp/takumi-extract-out/sub");
+    sys_rmdir("/tmp/takumi-extract-out/v7d");
+    sys_rmdir("/tmp/takumi-extract-out/pured");
     sys_rmdir(xdest);
     sys_unlink(xarc);
     sys_unlink("/tmp/takumi-extract.tar.gz");

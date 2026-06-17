@@ -84,6 +84,15 @@
       verify → extract → patch → build → package**. Confirmed live against GNU
       hello 2.12.1 source with a real unified diff.
 
+- [x] v7 (pre-POSIX) tar extraction (0.9.5) — `extract_archive` now gates header
+      acceptance on the **checksum** (`_tar_checksum_ok`), not the `ustar` magic,
+      so it accepts the magic-less v7 layout real GNU release tarballs use (GNU
+      hello 2.12.1 failed with `SRC_ERR_BAD_MAGIC` before). v7 dirs (regular
+      typeflag + trailing-slash name) are reclassified as directories. No
+      security regression (checksum is a stronger gate than the magic). Model in
+      [ADR 0008](../adr/0008-v7-tar-checksum-gated-headers.md). Confirmed live
+      against the real v7 GNU hello tarball.
+
 ## Backlog (0.9.x)
 
 - [ ] Streaming download for sources > 128 MiB — blocked on a sandhi
@@ -91,14 +100,6 @@
       buffered GET pre-allocates the body, capping us at 128 MiB). Tracked on
       sandhi's roadmap ("Wait-for-second-consumer-ask" → "Streaming GET to an
       fd"); wire it once it lands. takumi is the first consumer ask.
-- [ ] v7 (pre-POSIX) tar extraction — `extract_archive` (`src/source.cyr`,
-      [ADR 0002](../adr/0002-source-extraction-safety.md)) hard-requires the
-      `ustar` magic at offset 257, so it rejects old **v7** tar with
-      `SRC_ERR_BAD_MAGIC`. Real GNU release tarballs (e.g. GNU hello 2.12.1) are
-      v7 — no magic. v7 is a strict field-prefix of ustar, so the fix is to gate
-      on the header **checksum** (already computed, `_tar_checksum_ok`) instead
-      of the magic, accepting magic-less-but-checksum-valid headers. Surfaced
-      while confirming patch application (0.9.4) against GNU hello.
 - [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
       (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.
 - [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format) —

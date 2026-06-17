@@ -88,7 +88,10 @@ recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar`,
 `.tar.gz`, `.tar.xz`, and `.tar.bz2` (all via stdlib `sankoch` — gzip
 ISIZE-sized, xz/bz2 grow-retry) with a fail-closed path-traversal guard
 (rejects `..`, absolute paths, and escaping symlink targets; unsupported tar
-entry types abort). Network download stays in 0.9.x; the safety model is in
+entry types abort). Both the POSIX `ustar` and the pre-POSIX `v7` tar layouts
+are accepted — headers are validated by **checksum**, not the `ustar` magic, so
+magic-less v7 tarballs (real GNU release tarballs) extract
+([ADR 0008](../adr/0008-v7-tar-checksum-gated-headers.md)). Network download stays in 0.9.x; the safety model is in
 [ADR 0002](../adr/0002-source-extraction-safety.md).
 
 ### Build execution (`src/build.cyr`)
