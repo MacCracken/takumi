@@ -191,6 +191,42 @@ fn _tb_emit_file_v7(sb, name, typeflag, size, data) {
     return 0;
 }
 
+# Write a zero-padded octal number into a `width`-byte tar field (last byte is
+# the NUL terminator): mode at offset 100, mtime at offset 136.
+fn _tb_put_octal(block, off, width, value) {
+    var i = width - 2;
+    var v = value;
+    while (i >= 0) {
+        store8(block + off + i, 48 + (v & 7));
+        v = v / 8;
+        i = i - 1;
+    }
+    store8(block + off + width - 1, 0);
+    return 0;
+}
+
+# Like _tb_emit_file, but stamps the mode (offset 100) + mtime (offset 136)
+# fields before finalizing, so mode/mtime preservation can be tested.
+fn _tb_emit_file_meta(sb, name, typeflag, size, data, mode, mtime) {
+    var b = _tb_block();
+    _tb_put(b, 0, name);
+    store8(b + 156, typeflag);
+    _tb_put_size(b, size);
+    _tb_put_octal(b, 100, 8, mode);
+    _tb_put_octal(b, 136, 12, mtime);
+    _tb_finalize(b);
+    _tb_app(sb, b, 512);
+    if (size > 0) {
+        _tb_app(sb, data, size);
+        var pad = ((size + 511) / 512) * 512 - size;
+        if (pad > 0) {
+            var z = alloc(pad);
+            _tb_app(sb, z, pad);
+        }
+    }
+    return 0;
+}
+
 # Decimal digit count of n (>=0).
 fn _digits(n) {
     if (n == 0) { return 1; }
@@ -1618,7 +1654,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.10.0"), "builder stamp is takumi/0.10.0");
+    assert(streq(man_builder(cam_m), "takumi/0.10.1"), "builder stamp is takumi/0.10.1");
 
     test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
     # strict decimal parse: value, or -1 on empty/null/non-digit.
@@ -2090,6 +2126,20 @@ fn main() {
     assert_eq(lpn, 15, "symlink target length 15");
     assert_eq(memeq(lpbuf, "real-target.txt", 15), 1, "PAX linkpath override target");
 
+    test_group("extract_archive: preserves file mode + mtime");
+    # A shipped executable (0755) must keep +x — else ./configure can't run; and
+    # the mtime must survive — else make spuriously re-runs autotools. (0.10.1)
+    sys_unlink("/tmp/takumi-extract-out/run.sh");
+    var mmsb = str_builder_new();
+    _tb_emit_file_meta(mmsb, "run.sh", 48, 3, "hi\n", 493, 1700000000);   # 493 = 0755
+    _tb_terminator(mmsb);
+    assert(_tb_write(mmsb, xarc) > 0, "write mode/mtime fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "extract -> 0");
+    var stx = alloc(STAT_BUFSZ);
+    assert_eq(sys_lstat("/tmp/takumi-extract-out/run.sh", stx), 0, "stat extracted file");
+    assert_eq(load64(stx + STAT_MODE) & 0x1FF, 493, "mode preserved (0755, executable)");
+    assert_eq(load64(stx + STAT_MTIME), 1700000000, "mtime preserved");
+
     test_group("extract_archive: 512-byte non-tar block rejected (checksum gate)");
     # A full 512-byte block with neither ustar magic nor a valid checksum must
     # still be rejected — the checksum is the gate that replaced the magic.
@@ -2283,6 +2333,7 @@ fn main() {
     sys_unlink("/tmp/takumi-extract-out/afterglobal.txt");
     sys_unlink("/tmp/takumi-extract-out/sized.txt");
     sys_unlink("/tmp/takumi-extract-out/lnk2");
+    sys_unlink("/tmp/takumi-extract-out/run.sh");
     sys_rmdir("/tmp/takumi-extract-out/sub");
     sys_rmdir("/tmp/takumi-extract-out/v7d");
     sys_rmdir("/tmp/takumi-extract-out/pured");

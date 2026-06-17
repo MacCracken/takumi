@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.10.1] - 2026-06-17
+
+Real-package builds — the fixes that make `build --execute` actually compile
+real autotools packages, found by building GNU hello end to end. 840 tests
+(was 835).
+
+### Fixed
+
+- **Extraction dropped file modes.** `extract_archive` wrote every file `0644`
+  and ignored the tar header mode (offset 100), so a shipped `./configure`
+  (0755) landed without `+x` → "Permission denied". Now `chmod`s each file to
+  its recorded `mode & 0777` (rwx preserved; setuid/setgid/sticky dropped — a
+  tarball must not introduce those).
+- **Build environment had no `PATH`.** Steps `execve` with an empty env, so
+  `gcc` couldn't spawn `cc1` ("C compiler cannot create executables"). The build
+  prelude now bakes a standard `PATH`
+  (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`).
+- **Extraction dropped mtimes.** Files got the extraction wall-clock time, so
+  `make` saw sources as newer than shipped generated files and tried to re-run
+  autotools (failing without the tools). Now preserves the tar mtime (offset
+  136) via `utimensat`, keeping the author's generated-vs-source ordering.
+
+  All three are in [ADR 0013](docs/adr/0013-real-package-builds.md).
+
+### Verified
+
+- **GNU hello 2.12.1 built end to end**: fetch → verify → extract → `./configure`
+  → `make` (real C compilation) → `make install` → `.ark`, all inside the
+  sandbox (network isolation + Landlock + timeout). The product is a real ELF
+  x86-64 PIE binary that runs (`Hello, world!`).
+- Tests (+5): extraction preserves mode (`0755`, executable) + mtime. Integration
+  adds a real `gcc`+`make` compile over loopback (gated on the toolchain) — CI
+  proves real compilation with no external download.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.10.1.
+
+### Notes
+
+- v1.0 criterion 1 (build the full base system): the pipeline now builds real
+  packages (demonstrated end to end). A complete 309-package build is an
+  operator/CI activity (needs every build dep + machine-hours); takumi's side —
+  ordered, sandboxed, reproducible, real-compile builds — is done.
+
 ## [0.10.0] - 2026-06-17
 
 Build sandbox, second bite — **Landlock filesystem confinement**: a build step's

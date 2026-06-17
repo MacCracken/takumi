@@ -78,6 +78,10 @@ fn _build_env_prelude(ctx) {
     str_builder_add_cstr(sb, _sh_squote(cflags));
     str_builder_add_cstr(sb, "\nexport LDFLAGS=");
     str_builder_add_cstr(sb, _sh_squote(ldflags));
+    # A fixed, standard PATH: the build execs with an empty environment (ADR
+    # 0005), so without this even `gcc` can't find `cc1` (posix_spawnp searches
+    # PATH). Baked (not inherited) to keep builds reproducible.
+    str_builder_add_cstr(sb, "\nexport PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'");
     str_builder_add_cstr(sb, "\nexport MAKEFLAGS='-j1'\nexport LC_ALL=C\numask 022\n");
     return str_cstr(str_builder_build(sb));
 }

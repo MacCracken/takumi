@@ -110,6 +110,13 @@
       [ADR 0010](../adr/0010-streaming-download.md). Verified live with a 180 MiB
       source (over the old cap).
 
+- [x] Real-package builds (0.10.1) — extraction now preserves file **mode**
+      (`+x` on `./configure`) and **mtime** (no spurious autotools regen), and
+      the build prelude bakes a standard **PATH** (so `gcc` finds `cc1`). These
+      were the blockers to compiling real packages; found + fixed by building
+      GNU hello end to end (configure → make → install → `.ark`, sandboxed,
+      produces a working binary). [ADR 0013](../adr/0013-real-package-builds.md).
+
 ## Backlog (0.9.x)
 - [ ] GNU long-name/long-link tar headers (`L` = 76, `K` = 75) — the entry's
       data block carries the next entry's long name/linkname (not PAX records).
@@ -160,9 +167,12 @@
 
 Status: ✅ met · ◐ partial · ☐ open.
 
-1. ◐ Can build the full AGNOS base system from zugot recipes — the per-package
-   pipeline is complete + hardened; a full multi-package base-system build run
-   is still to be done.
+1. ◐ Can build the full AGNOS base system from zugot recipes — the pipeline now
+   **builds real packages end to end** (GNU hello: configure → make → install →
+   `.ark`, sandboxed; extraction mode/mtime + build PATH fixed in 0.10.1,
+   [ADR 0013](../adr/0013-real-package-builds.md)). The complete 309-package run
+   is an operator/CI activity (every build dep + machine-hours); takumi's side
+   is demonstrated.
 2. ✅ Reproducible builds: same recipe + same sources = identical `.ark` output
    — deterministic writer + `SOURCE_DATE_EPOCH` (0.9.9); proven byte-identical
    in the integration harness.

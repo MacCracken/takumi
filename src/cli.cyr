@@ -17,7 +17,7 @@
 
 # Single source of the CLI version string. Keep in sync with VERSION,
 # cyrius.cyml, and the src/package.cyr builder stamp.
-fn takumi_version() { return "0.10.0"; }
+fn takumi_version() { return "0.10.1"; }
 
 # --- small output helpers ---------------------------------------------
 

@@ -413,6 +413,20 @@ fn _pax_parse(data, len, rec) {
     return 0;
 }
 
+# Set a file's atime+mtime to `secs` (Unix seconds) via utimensat(AT_FDCWD).
+# Preserving the tarball's mtimes keeps the author's relative ordering of
+# generated-vs-source files, so `make` doesn't spuriously try to regenerate
+# (e.g. re-run autotools on aclocal.m4) when the toolchain isn't present.
+fn _set_mtime(path, secs) {
+    var ts = alloc(32);          # struct timespec[2]: {sec, nsec} x2
+    store64(ts + 0, secs);
+    store64(ts + 8, 0);
+    store64(ts + 16, secs);
+    store64(ts + 24, 0);
+    sys_utimensat(0 - 100, path, ts, 0);   # AT_FDCWD = -100
+    return 0;
+}
+
 # --- public: extraction -----------------------------------------------
 
 # Extract a `.tar` or `.tar.gz` at `archive_path_cstr` into
@@ -573,6 +587,17 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
                     var ffull = _join2(dest_dir_cstr, full);
                     if (_mkdir_p(_dirname_cstr(ffull)) != 0) { return 0 - SRC_ERR_WRITE; }
                     if (file_write_all(ffull, tar_buf + pos, esize) != esize) { return 0 - SRC_ERR_WRITE; }
+                    # Preserve the recorded permission bits (octal mode at offset
+                    # 100). file_write_all creates 0644, which silently drops the
+                    # executable bit — breaking shipped scripts like ./configure.
+                    # Mask to 0777: keep rwx for all classes, drop setuid/setgid/
+                    # sticky (a tarball must not introduce those into the tree).
+                    var fmode = _parse_octal(block + 100, 8);
+                    if (fmode > 0) { sys_chmod(ffull, fmode & 0x1FF); }
+                    # Preserve the tar mtime (offset 136) so make's timestamp
+                    # dependency logic sees the author's generated-vs-source order.
+                    var fmtime = _parse_octal(block + 136, 12);
+                    if (fmtime > 0) { _set_mtime(ffull, fmtime); }
                     pos = pos + ((esize + 511) / 512) * 512;
                 }
             }

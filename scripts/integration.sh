@@ -178,6 +178,43 @@ else
   echo "== PAX test skipped (needs python3 + tar) =="
 fi
 
+# Real compilation end to end (0.10.1): fetch -> verify -> extract -> build a
+# tiny C program with `make` (using the real toolchain) -> install into $PKG ->
+# package. Proves the extraction mode-bit fix (executables) + the build PATH fix
+# (cc/cc1 resolve) on a real compile, over loopback (no external network).
+# Needs python3 + tar + gcc + make; skipped otherwise.
+if command -v python3 >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 \
+   && command -v gcc >/dev/null 2>&1 && command -v make >/dev/null 2>&1; then
+  echo "== build --execute real compile (gcc + make) =="
+  SRV=/tmp/takumi-it-csrv; REC=/tmp/takumi-it-crec
+  rm -rf "$SRV" "$REC" /tmp/takumi-build; mkdir -p "$SRV/cprog" "$REC"
+  printf '#include <stdio.h>\nint main(void){puts("built-by-takumi");return 0;}\n' > "$SRV/cprog/hello.c"
+  printf 'all: prog\nprog: hello.c\n\t$(CC) -O2 -o prog hello.c\ninstall:\n\tmkdir -p $(DESTDIR)/usr/bin\n\tcp prog $(DESTDIR)/usr/bin/cprog\n' > "$SRV/cprog/Makefile"
+  tar czf "$SRV/cprog-1.0.tar.gz" -C "$SRV" cprog
+  SHA=$(sha256sum "$SRV/cprog-1.0.tar.gz" | cut -d' ' -f1)
+  {
+    echo '[package]'; echo 'name = "cprog"'; echo 'version = "1.0"'
+    echo 'description = "real compile demo"'; echo 'license = "MIT"'; echo
+    echo '[source]'; echo 'url = "http://127.0.0.1:8102/cprog-1.0.tar.gz"'
+    echo "sha256 = \"$SHA\""; echo
+    echo '[build]'; echo 'make = "make"'; echo 'install = "make DESTDIR=$PKG install"'
+  } > "$REC/cprog.cyml"
+  ( cd "$SRV" && python3 -m http.server 8102 >/dev/null 2>&1 & echo $! > /tmp/takumi-it-csrv.pid )
+  sleep 1
+  "$BIN" build "$REC" --execute >/dev/null 2>&1; check "build --execute (real compile)" 0 $?
+  BIN_OUT=/tmp/takumi-build/cprog/pkg/usr/bin/cprog
+  if [ -x "$BIN_OUT" ] && [ "$("$BIN_OUT" 2>/dev/null)" = "built-by-takumi" ]; then
+    echo "  ok   compiled a real C program with make, installed + runs"
+  else
+    echo "  FAIL real compile did not produce a working binary"
+    fails=$((fails + 1))
+  fi
+  kill "$(cat /tmp/takumi-it-csrv.pid 2>/dev/null)" 2>/dev/null
+  rm -rf "$SRV" "$REC" /tmp/takumi-build /tmp/takumi-it-csrv.pid
+else
+  echo "== real-compile test skipped (needs python3 + tar + gcc + make) =="
+fi
+
 # Build sandbox: network isolation (0.9.8). A build step records how many
 # network interfaces it sees via /proc/net/dev (per-netns). When the CLI reports
 # isolation active, the step must see exactly 1 (loopback) — proof the build ran
