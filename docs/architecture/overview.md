@@ -66,6 +66,8 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 4. Source:   fetch_source (HTTPS via sandhi, src/fetch.cyr) -> verify_source_hash
              (SHA-256 vs recipe) -> extract_archive (.tar/.gz/.xz/.bz2,
              path-traversal-guarded) -> source tree (src/source.cyr)
+4b. Patch:   apply_patches applies source.patches to the extracted root via
+             `patch -p1` (src/build.cyr), after extract, before build
 5. Build:    exec_build runs [build] steps via /bin/sh -c (unprivileged) -> fake-root (src/build.cyr)
 6. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr,
              symlink-aware) -> serialized .ark v1 (src/ark_format.cyr): TOML
@@ -100,7 +102,11 @@ build runs **unprivileged** and writes only into the DESTDIR fake-root — no
 root, no setuid helper (the privilege boundary is downstream in ark/shakti).
 `stage_build_dirs` lays out `build_root/<pkg>/{src,build,pkg}`. CLI: `build
 --execute`. Security model + deferred sandbox in
-[ADR 0005](../adr/0005-build-execution.md).
+[ADR 0005](../adr/0005-build-execution.md). Before the build steps,
+`apply_patches(recipe, cwd, patch_dir)` applies the recipe's `source.patches`
+(in order) to the extracted source root by shelling out to the system `patch`
+(`patch -p1 -d <cwd> -i <file>`, fail-closed); patch files resolve under the
+recipes directory. See [ADR 0007](../adr/0007-patch-application.md).
 
 ### `.ark` serialization (`src/ark_format.cyr`)
 

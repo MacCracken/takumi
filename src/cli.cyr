@@ -16,7 +16,7 @@
 
 # Single source of the CLI version string. Keep in sync with VERSION,
 # cyrius.cyml, and the src/package.cyr builder stamp.
-fn takumi_version() { return "0.9.3"; }
+fn takumi_version() { return "0.9.4"; }
 
 # --- small output helpers ---------------------------------------------
 
@@ -208,7 +208,7 @@ fn _ark_out_path(out_dir, name) {
 # set, after validation + ordering succeeded). Fail-closed: a failed build
 # stops the run. Recipes whose source isn't staged (download pending) are
 # skipped, not failed.
-fn _cli_build_execute(map, order) {
+fn _cli_build_execute(map, order, patch_dir) {
     var out_dir = _cli_build_out();
     _mkdir_p(out_dir);
     var i = 0;
@@ -237,6 +237,12 @@ fn _cli_build_execute(map, order) {
                 _cli_say2("build: source extract failed: ", name);
                 return 1;
             }
+        }
+        # Apply recipe patches to the extracted source root (after extract,
+        # before build). Patch files resolve under the recipes dir.
+        if (apply_patches(r, _build_cwd(ctx), patch_dir) != 0) {
+            _cli_say2("build: patch failed: ", name);
+            return 1;
         }
         var entry = exec_build(ctx, clock_epoch_secs());
         if (ble_status(entry) == BS_FAILED) {
@@ -291,7 +297,7 @@ fn cmd_build(dir, execute) {
         i = i + 1;
     }
     if (execute == 1) {
-        return _cli_build_execute(map, order);
+        return _cli_build_execute(map, order, dir);
     }
     println("build execution: re-run with --execute (runs unprivileged into a fake-root)");
     return 2;

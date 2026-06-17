@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.4] - 2026-06-17
+
+Patch application — a recipe's `source.patches` are now applied to the extracted
+source tree before the build, closing the **fetch → verify → extract → patch →
+build → package** pipeline. 782 tests (was 775).
+
+### Added
+
+- **`apply_patches(recipe, cwd, patch_dir)`** (`src/build.cyr`) — applies each
+  `source.patches` entry in order to the extracted source root by shelling out
+  to the system `patch` (`patch -p1 -d <cwd> -i <file>`), `-p1` stripping the
+  `a/` `b/` prefix of unified diffs. Fail-closed: returns `0 - (index+1)` of the
+  first patch that fails; no patches → no-op. Patch files resolve under the
+  recipes directory. Both paths are single-quoted (`_sh_squote`). Security model
+  + the v7-tar follow-up in [ADR 0007](docs/adr/0007-patch-application.md).
+- **Wired into `build --execute`** — `_cli_build_execute` applies patches after
+  `extract_archive`, before `exec_build`; a patch failure stops the build (never
+  packages un-patched source). The CLI threads the recipes `dir` as `patch_dir`.
+- Tests: hermetic round-trip applies a genuine unified diff via the real `patch`
+  tool and asserts the file changed, plus a non-applying patch returns non-zero.
+- Integration (`scripts/integration.sh`): a loopback **fetch → verify → extract
+  → patch → build → package** case with a `diff`-generated patch, asserting the
+  build observed the change (needs `python3`+`tar`+`diff`).
+
+### Verified
+
+- Full pipeline confirmed live against **GNU hello 2.12.1** source with a real
+  unified diff against `src/hello.c`: fetch → verify (sha256) → extract →
+  `patching file src/hello.c` → build → package, the patched source landing in
+  the fake-root.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.9.4.
+
+### Known limitations
+
+- Fixed `-p1` strip level; runtime dependency on `patch`.
+- **v7 (pre-POSIX) tar** — surfaced while confirming against GNU hello: GNU
+  release tarballs are often old v7 tar (no `ustar` magic), which
+  `extract_archive` rejects (`SRC_ERR_BAD_MAGIC`) before patches run. Tracked on
+  the roadmap as an extraction-layer follow-up.
+
 ## [0.9.3] - 2026-06-17
 
 Build cwd = the extracted tarball root — the fix that makes `build --execute`

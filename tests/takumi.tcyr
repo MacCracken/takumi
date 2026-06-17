@@ -1484,7 +1484,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.3"), "builder stamp is takumi/0.9.3");
+    assert(streq(man_builder(cam_m), "takumi/0.9.4"), "builder stamp is takumi/0.9.4");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -2150,6 +2150,41 @@ fn main() {
     assert(streq(_build_cwd(cw_ctx), cw_src), "multiple entries -> source dir");
 
     exec_vec(rmclean);
+
+    test_group("apply_patches: real unified diff via system patch");
+    var pdir = "/tmp/takumi-patch-test";
+    var psrc = "/tmp/takumi-patch-test/src";
+    var prm = vec_new();
+    vec_push(prm, "/bin/rm"); vec_push(prm, "-rf"); vec_push(prm, pdir);
+    exec_vec(prm);
+    assert_eq(sys_mkdir(pdir, 0x1FF), 0, "patch: mkdir dir");
+    assert_eq(sys_mkdir(psrc, 0x1FF), 0, "patch: mkdir src");
+    var orig = "line one\nold line\nline three\n";
+    assert(file_write_all("/tmp/takumi-patch-test/src/foo.txt", orig, strlen(orig)) > 0, "patch: write foo.txt");
+    # a genuine unified diff (a/ b/ prefixes -> -p1 strips them)
+    var dsb = str_builder_new();
+    str_builder_add_cstr(dsb, "--- a/foo.txt\n+++ b/foo.txt\n@@ -1,3 +1,3 @@\n line one\n-old line\n+new line\n line three\n");
+    var diff = str_cstr(str_builder_build(dsb));
+    assert(file_write_all("/tmp/takumi-patch-test/fix.patch", diff, strlen(diff)) > 0, "patch: write fix.patch");
+    var ppatches = vec_new(); vec_push(ppatches, "fix.patch");
+    var precipe = recipe_new(pkg_new("p", "1.0", "d", "MIT", vec_new(), 1, "x86_64"),
+                             src_new_local(ppatches), dep_new(vec_new(), vec_new()),
+                             bld_new(0, 0, 0, 0, 0, 0), sec_new(vec_new(), 0, 0));
+    assert_eq(apply_patches(precipe, psrc, pdir), 0, "apply real patch -> 0");
+    var prb = alloc(128);
+    var prn = file_read_all("/tmp/takumi-patch-test/src/foo.txt", prb, 128);
+    assert_eq(memeq(prb, "line one\nnew line\nline three\n", 29), 1, "file content patched");
+    # a non-applying patch (context mismatch) -> failure
+    var bsb = str_builder_new();
+    str_builder_add_cstr(bsb, "--- a/foo.txt\n+++ b/foo.txt\n@@ -1,1 +1,1 @@\n-does not match\n+whatever\n");
+    var bdiff = str_cstr(str_builder_build(bsb));
+    file_write_all("/tmp/takumi-patch-test/bad.patch", bdiff, strlen(bdiff));
+    var bpatches = vec_new(); vec_push(bpatches, "bad.patch");
+    var brecipe = recipe_new(pkg_new("p", "1.0", "d", "MIT", vec_new(), 1, "x86_64"),
+                             src_new_local(bpatches), dep_new(vec_new(), vec_new()),
+                             bld_new(0, 0, 0, 0, 0, 0), sec_new(vec_new(), 0, 0));
+    assert(apply_patches(brecipe, psrc, pdir) != 0, "non-applying patch -> non-zero (fail-closed)");
+    exec_vec(prm);
 
     test_group("cli_dispatch: version/help/usage/unknown");
     assert_eq(cli_dispatch(pkg_vec("version", 0, 0, 0, 0, 0)), 0, "version -> 0");

@@ -76,10 +76,29 @@
       the archive's single top-level dir so `./configure`/`make` run in the
       source root; makes `build --execute` correct on real recipes.
 
+- [x] Patch application (0.9.4) — `apply_patches` (`src/build.cyr`) applies a
+      recipe's `source.patches` to the extracted source root after extract,
+      before build, by shelling out to the system `patch` (`-p1`); fail-closed,
+      wired into `build --execute`. Security model in
+      [ADR 0007](../adr/0007-patch-application.md). Pipeline is now **fetch →
+      verify → extract → patch → build → package**. Confirmed live against GNU
+      hello 2.12.1 source with a real unified diff.
+
 ## Backlog (0.9.x)
 
-- [ ] Streaming download for sources > 128 MiB (sandhi buffers in memory)
-- [ ] Patch application
+- [ ] Streaming download for sources > 128 MiB — blocked on a sandhi
+      download-to-fd / body-sink API (sandhi's only streaming is SSE; the
+      buffered GET pre-allocates the body, capping us at 128 MiB). Tracked on
+      sandhi's roadmap ("Wait-for-second-consumer-ask" → "Streaming GET to an
+      fd"); wire it once it lands. takumi is the first consumer ask.
+- [ ] v7 (pre-POSIX) tar extraction — `extract_archive` (`src/source.cyr`,
+      [ADR 0002](../adr/0002-source-extraction-safety.md)) hard-requires the
+      `ustar` magic at offset 257, so it rejects old **v7** tar with
+      `SRC_ERR_BAD_MAGIC`. Real GNU release tarballs (e.g. GNU hello 2.12.1) are
+      v7 — no magic. v7 is a strict field-prefix of ustar, so the fix is to gate
+      on the header **checksum** (already computed, `_tar_checksum_ok`) instead
+      of the magic, accepting magic-less-but-checksum-valid headers. Surfaced
+      while confirming patch application (0.9.4) against GNU hello.
 - [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
       (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.
 - [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format) —

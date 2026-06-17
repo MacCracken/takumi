@@ -196,3 +196,30 @@ fn exec_build(ctx, started) {
     var end = clock_epoch_secs();
     return ble_new(pkgname, BS_COMPLETE, started, end, end - started, 0);
 }
+
+# Apply the recipe's source.patches (in order) to the extracted tree at `cwd`,
+# resolving each patch file under `patch_dir`. Shells out to the system
+# `patch` (industry-standard unified-diff applier; same shell-out posture as
+# the build steps) with `-p1` (strip the leading a/ b/ component). Fail-closed:
+# returns 0 on success, or `0 - (index+1)` of the first patch that fails to
+# apply. No patches -> 0.
+fn apply_patches(recipe, cwd, patch_dir) {
+    var patches = src_patches(recipe_source(recipe));
+    var n = vec_len(patches);
+    var i = 0;
+    while (i < n) {
+        var pf = _join2(patch_dir, vec_get(patches, i));
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "patch -p1 -d ");
+        str_builder_add_cstr(sb, _sh_squote(cwd));
+        str_builder_add_cstr(sb, " -i ");
+        str_builder_add_cstr(sb, _sh_squote(pf));
+        var args = vec_new();
+        vec_push(args, "/bin/sh");
+        vec_push(args, "-c");
+        vec_push(args, str_cstr(str_builder_build(sb)));
+        if (exec_vec(args) != 0) { return 0 - (i + 1); }
+        i = i + 1;
+    }
+    return 0;
+}

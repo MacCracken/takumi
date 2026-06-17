@@ -98,6 +98,46 @@ else
   echo "== loopback fetch test skipped (needs python3 + tar) =="
 fi
 
+# Patch application end to end: fetch -> verify -> extract -> APPLY PATCH ->
+# build -> package, with a real unified diff (system `diff`). Needs python3 +
+# tar + diff; skipped otherwise.
+if command -v python3 >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v diff >/dev/null 2>&1; then
+  echo "== build --execute with a patch (real unified diff) =="
+  SRV=/tmp/takumi-it-psrv; REC=/tmp/takumi-it-prec
+  rm -rf "$SRV" "$REC" /tmp/takumi-build; mkdir -p "$SRV/pkgsrc" "$REC"
+  # pristine source served to takumi; the patch flips greeting -> patched.
+  printf 'greeting = "world"\n' > "$SRV/pkgsrc/app.conf"
+  tar czf "$SRV/demo-1.0.tar.gz" -C "$SRV" pkgsrc
+  SHA=$(sha256sum "$SRV/demo-1.0.tar.gz" | cut -d' ' -f1)
+  # generate a genuine unified diff (a/ b/ prefixes -> -p1 strips them).
+  mkdir -p /tmp/takumi-it-diff/a /tmp/takumi-it-diff/b
+  printf 'greeting = "world"\n' > /tmp/takumi-it-diff/a/app.conf
+  printf 'greeting = "patched"\n' > /tmp/takumi-it-diff/b/app.conf
+  ( cd /tmp/takumi-it-diff && diff -u a/app.conf b/app.conf > "$REC/greeting.patch" || true )
+  {
+    echo '[package]'; echo 'name = "demo"'; echo 'version = "1.0"'
+    echo 'description = "loopback patch demo"'; echo 'license = "MIT"'; echo
+    echo '[source]'; echo 'url = "http://127.0.0.1:8099/demo-1.0.tar.gz"'
+    echo "sha256 = \"$SHA\""; echo 'patches = ["greeting.patch"]'; echo
+    # cwd is the extracted tarball root (pkgsrc/), so app.conf is at ./app.conf.
+    # The build asserts the patch applied (new value present, old value gone).
+    echo '[build]'; echo 'install = "grep -q patched app.conf && ! grep -q world app.conf && mkdir -p $PKG/etc && cp app.conf $PKG/etc/demo.conf"'
+  } > "$REC/demo.cyml"
+  ( cd "$SRV" && python3 -m http.server 8099 >/dev/null 2>&1 & echo $! > /tmp/takumi-it-psrv.pid )
+  sleep 1
+  "$BIN" build "$REC" --execute >/dev/null 2>&1; check "build --execute (patch applied)" 0 $?
+  if [ -f /tmp/takumi-build/out/demo.ark ] && grep -q patched /tmp/takumi-build/demo/pkg/etc/demo.conf 2>/dev/null; then
+    echo "  ok   patch applied to the extracted source, build saw the change"
+  else
+    echo "  FAIL patch was not applied end to end"
+    fails=$((fails + 1))
+  fi
+  kill "$(cat /tmp/takumi-it-psrv.pid 2>/dev/null)" 2>/dev/null
+  rm -rf "$SRV" "$REC" /tmp/takumi-build /tmp/takumi-it-diff /tmp/takumi-it-psrv.pid
+else
+  echo "== patch test skipped (needs python3 + tar + diff) =="
+fi
+
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"
 if [ -d "$ZUGOT" ]; then
