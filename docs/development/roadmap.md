@@ -117,12 +117,14 @@
       GNU hello end to end (configure → make → install → `.ark`, sandboxed,
       produces a working binary). [ADR 0013](../adr/0013-real-package-builds.md).
 
+- [x] GNU long-name/long-link tar headers (`L` = 76, `K` = 75) (0.10.2) — the
+      entry's data block carries the next entry's long name/linkname (pre-PAX
+      mechanism). Same intercept-and-override path as PAX, through the same
+      traversal guard. Completes the tar matrix (ustar + v7 + PAX + GNU). Model
+      in [ADR 0009](../adr/0009-pax-extended-headers.md). Verified byte-identical
+      to system `tar` on a real `--format=gnu` long-path archive.
+
 ## Backlog (0.9.x)
-- [ ] GNU long-name/long-link tar headers (`L` = 76, `K` = 75) — the entry's
-      data block carries the next entry's long name/linkname (not PAX records).
-      Deferred from 0.9.6: appeared in none of the sampled real tarballs (PAX is
-      the modern mechanism); add on the first real instance. See
-      [ADR 0009](../adr/0009-pax-extended-headers.md).
 - [x] Build sandbox — network isolation + timeout (0.9.8) — `src/sandbox.cyr`
       `exec_vec_sandboxed` runs each build step in a fresh **network namespace**
       (unprivileged user-namespace + identity uid/gid map; hermetic, no external

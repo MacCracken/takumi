@@ -94,11 +94,11 @@ ISIZE-sized, xz/bz2 grow-retry) with a fail-closed path-traversal guard
 entry types abort). Both the POSIX `ustar` and the pre-POSIX `v7` tar layouts
 are accepted — headers are validated by **checksum**, not the `ustar` magic, so
 magic-less v7 tarballs (real GNU release tarballs) extract
-([ADR 0008](../adr/0008-v7-tar-checksum-gated-headers.md)). POSIX.1-2001 **PAX**
-extended headers (`x` per-file, `g` global) are parsed for `path`/`linkpath`/
-`size` overrides — applied through the same path-traversal guards — so modern
-long-path tarballs (CPython, OpenSSL) extract
-([ADR 0009](../adr/0009-pax-extended-headers.md)). Network download stays in 0.9.x; the safety model is in
+([ADR 0008](../adr/0008-v7-tar-checksum-gated-headers.md)). Long paths via both
+mechanisms extract — POSIX.1-2001 **PAX** (`x`/`g`: `path`/`linkpath`/`size`)
+and **GNU** `L`/`K` long-name headers — each applied through the same
+path-traversal guard ([ADR 0009](../adr/0009-pax-extended-headers.md)). The full
+real-world matrix is covered: ustar + v7 + PAX + GNU, across gz/xz/bz2. Network download stays in 0.9.x; the safety model is in
 [ADR 0002](../adr/0002-source-extraction-safety.md).
 
 ### Build execution (`src/build.cyr`)

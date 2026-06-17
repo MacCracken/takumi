@@ -94,5 +94,12 @@ the path string comes from, and that string is guarded identically.
 
 ## Follow-ups
 
-- GNU long-name/long-link (`L` = 76, `K` = 75) extended headers — deferred until
-  a recipe needs them.
+- ~~GNU long-name/long-link (`L` = 76, `K` = 75) extended headers — deferred
+  until a recipe needs them.~~ **Done in 0.10.2.** Handled by the same
+  intercept-and-stash mechanism as PAX (a metadata header that overrides the
+  next entry's path/linkpath), but the data block is the raw NUL-terminated
+  name rather than `key=value` records. Precedence: PAX per-file > PAX global >
+  GNU long name > the header's own field; the GNU override flows through the
+  same `_tar_path_is_safe` guard. Verified byte-identical to system `tar` on a
+  real `tar --format=gnu` long-path archive. takumi now extracts ustar, v7, PAX,
+  and GNU-format tar across gz/xz/bz2 — the full real-world matrix.

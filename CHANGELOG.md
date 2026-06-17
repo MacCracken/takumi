@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.10.2] - 2026-06-17
+
+GNU long-name tar headers — clears the last extraction backlog item, completing
+real-world tar-format coverage (ustar + v7 + PAX + GNU). 845 tests (was 840).
+
+### Added
+
+- **GNU `L`/`K` long-name headers** (`src/source.cyr`). Typeflags `L` (76,
+  long path) and `K` (75, long linkname) are intercepted before the entry
+  dispatch — their data block is the full NUL-terminated name for the *next*
+  entry — and applied as an override (precedence PAX per-file > PAX global > GNU
+  long name > the header field). The override flows through the same
+  `_tar_path_is_safe` traversal guard. This was the pre-PAX way of carrying
+  paths > 100 bytes; real GNU-format tarballs use it. Mechanism noted in
+  [ADR 0009](docs/adr/0009-pax-extended-headers.md).
+- Tests (+5): a GNU `L` fixture (a > 100-byte name overriding the header
+  placeholder) extracts to the long path. Integration adds a real
+  `tar --format=gnu` loopback build over a long path; verified byte-identical to
+  system `tar` on a real GNU-format archive during development.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.10.2.
+
+### Notes
+
+- This is a backlog cleanup before the pre-v1 security audit, so the extractor
+  has no remaining "unsupported format" gap to audit around.
+
 ## [0.10.1] - 2026-06-17
 
 Real-package builds — the fixes that make `build --execute` actually compile
@@ -39,9 +68,12 @@ real autotools packages, found by building GNU hello end to end. 840 tests
   → `make` (real C compilation) → `make install` → `.ark`, all inside the
   sandbox (network isolation + Landlock + timeout). The product is a real ELF
   x86-64 PIE binary that runs (`Hello, world!`).
-- Tests (+5): extraction preserves mode (`0755`, executable) + mtime. Integration
-  adds a real `gcc`+`make` compile over loopback (gated on the toolchain) — CI
-  proves real compilation with no external download.
+- Tests (+5): extraction preserves mode (`0755`, executable) + mtime (the hard
+  guarantees). Integration adds a best-effort real `gcc`+`make` compile over
+  loopback — tolerant + diagnostic, since a real compile under the full
+  unprivileged user+net+Landlock sandbox depends on the runner's kernel /
+  Landlock ABI / toolchain; it reports a diagnostic on failure rather than
+  gating CI.
 
 ### Changed
 

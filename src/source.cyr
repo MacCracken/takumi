@@ -11,9 +11,9 @@
 # stdlib `sankoch` (xz/bzip2 decode landed in sankoch 2.4.x / cyrius 6.2.16).
 # Both the POSIX `ustar` and the pre-POSIX `v7` tar layouts are accepted:
 # headers are validated by checksum, not by the `ustar` magic (real GNU
-# release tarballs are v7 and carry no magic — 0.9.5). PAX extended headers
-# (typeflag `x`/`g`, POSIX.1-2001) are parsed for `path`/`linkpath`/`size`
-# overrides so long-path tarballs (e.g. CPython, OpenSSL) extract — 0.9.6.
+# release tarballs are v7 and carry no magic — 0.9.5). Long paths via either
+# mechanism extract: PAX extended headers (typeflag `x`/`g`, POSIX.1-2001 —
+# `path`/`linkpath`/`size`, 0.9.6) and GNU `L`/`K` long-name headers (0.10.2).
 #
 # Security model and the path-guard rationale are recorded in
 # docs/adr/0002-source-extraction-safety.md. The guards are fail-closed:
@@ -29,7 +29,7 @@ enum SrcErr {
     SRC_ERR_DECOMPRESS = 4;  # sankoch decompress failed (gzip/xz/bzip2)
     SRC_ERR_TRUNCATED = 5;   # header < 512 or data shorter than its size
     SRC_ERR_BAD_HEADER = 6;  # checksum / octal / magic check failed
-    SRC_ERR_UNSUPPORTED = 7; # typeflag outside {regular, dir, symlink, PAX x/g}
+    SRC_ERR_UNSUPPORTED = 7; # typeflag outside {regular,dir,symlink,PAX x/g,GNU L/K}
     SRC_ERR_UNSAFE_PATH = 8; # path-traversal guard tripped
     SRC_ERR_WRITE = 9;       # mkdir / write / symlink syscall failed
 }
@@ -512,6 +512,8 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
     var ended = 0;
     var px = _pax_rec_new();      # per-file PAX overrides ('x') — next entry only
     var pg = _pax_rec_new();      # global PAX overrides ('g') — persist
+    var gnu_name = 0;             # GNU 'L' long name for the next entry (0 = none)
+    var gnu_link = 0;             # GNU 'K' long linkname for the next entry
     while (pos + 512 <= tar_len) {
         var block = tar_buf + pos;
         if (_is_zero_block(block) == 1) {
@@ -531,8 +533,7 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
             # PAX extended headers ('x' per-file = 120, 'g' global = 103): the
             # data block carries "len key=value\n" records overriding the
             # path/linkpath/size of the applicable entry(ies). Parse, stash, and
-            # consume without emitting a filesystem entry. (GNU 'L'/'K'
-            # long-name headers are still unsupported — see roadmap.)
+            # consume without emitting a filesystem entry.
             if (typ == 120 || typ == 103) {
                 pos = pos + 512;
                 if (pos + size > tar_len) { return 0 - SRC_ERR_TRUNCATED; }
@@ -542,10 +543,24 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
                 continue;
             }
 
+            # GNU long-name ('L' = 76) / long-linkname ('K' = 75): the data block
+            # is the full NUL-terminated name for the NEXT entry (the old GNU way
+            # of carrying paths > 100 bytes, before PAX). Stash + consume.
+            if (typ == 76 || typ == 75) {
+                pos = pos + 512;
+                if (pos + size > tar_len) { return 0 - SRC_ERR_TRUNCATED; }
+                if (typ == 76) { gnu_name = _field_cstr(tar_buf + pos, 0, size); }
+                else { gnu_link = _field_cstr(tar_buf + pos, 0, size); }
+                pos = pos + ((size + 511) / 512) * 512;
+                continue;
+            }
+
             var full = _tar_full_path(block);
-            # PAX path override: per-file ('x') beats global ('g') beats header.
+            # Path override precedence: PAX per-file ('x') > PAX global ('g') >
+            # GNU long name ('L') > the header's own name field.
             var opath = load64(px + 0);
             if (opath == 0) { opath = load64(pg + 0); }
+            if (opath == 0) { opath = gnu_name; }
             if (opath != 0) { full = opath; }
             # PAX size override (files > 8 GiB carry size in the PAX record).
             var esize = size;
@@ -577,6 +592,7 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
                     var link = _field_cstr(block, 157, 100);
                     var olink = load64(px + 8);
                     if (olink == 0) { olink = load64(pg + 8); }
+                    if (olink == 0) { olink = gnu_link; }
                     if (olink != 0) { link = olink; }
                     if (_symlink_target_is_safe(full, link) != 1) { return 0 - SRC_ERR_UNSAFE_PATH; }
                     var sfull = _join2(dest_dir_cstr, full);
@@ -601,8 +617,10 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
                     pos = pos + ((esize + 511) / 512) * 512;
                 }
             }
-            # Per-file PAX overrides apply to exactly this entry; clear them.
+            # Per-file overrides apply to exactly this entry; clear them.
             _pax_rec_reset(px);
+            gnu_name = 0;
+            gnu_link = 0;
         }
     }
 

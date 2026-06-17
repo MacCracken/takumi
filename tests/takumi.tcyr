@@ -273,6 +273,28 @@ fn _tb_emit_pax(sb, typeflag, recstr) {
     return 0;
 }
 
+# Append a GNU long-name ('L'=76) / long-linkname ('K'=75) header whose data
+# block is the full NUL-terminated name for the following entry.
+fn _tb_emit_gnu_long(sb, typeflag, name) {
+    var nlen = strlen(name) + 1;        # GNU counts the trailing NUL in the size
+    var b = _tb_block();
+    _tb_put(b, 0, "././@LongLink");     # conventional placeholder name (ignored)
+    store8(b + 156, typeflag);
+    _tb_put_size(b, nlen);
+    _tb_finalize(b);
+    _tb_app(sb, b, 512);
+    var data = alloc(nlen);
+    memcpy(data, name, strlen(name));
+    store8(data + strlen(name), 0);
+    _tb_app(sb, data, nlen);
+    var pad = ((nlen + 511) / 512) * 512 - nlen;
+    if (pad > 0) {
+        var z2 = alloc(pad);
+        _tb_app(sb, z2, pad);
+    }
+    return 0;
+}
+
 # Two zero blocks = end-of-archive terminator.
 fn _tb_terminator(sb) {
     var z = alloc(1024);
@@ -1654,7 +1676,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.10.1"), "builder stamp is takumi/0.10.1");
+    assert(streq(man_builder(cam_m), "takumi/0.10.2"), "builder stamp is takumi/0.10.2");
 
     test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
     # strict decimal parse: value, or -1 on empty/null/non-digit.
@@ -2063,6 +2085,20 @@ fn main() {
     assert_eq(file_read_all("/tmp/takumi-extract-out/paxdir/long-overridden-name.txt", pxrb, 64), 5, "PAX path file size 5");
     assert_eq(memeq(pxrb, "world", 5), 1, "PAX path file content");
 
+    test_group("extract_archive: GNU 'L' long name (>100 bytes)");
+    sys_unlink("/tmp/takumi-extract-out/gnudir/a-long-gnu-name.txt");
+    sys_unlink("/tmp/takumi-extract-out/shortname");
+    var glsb = str_builder_new();
+    _tb_emit_gnu_long(glsb, 76, "gnudir/a-long-gnu-name.txt");   # 'L' for the next entry
+    _tb_emit_file(glsb, "shortname", 48, 4, "data");
+    _tb_terminator(glsb);
+    assert(_tb_write(glsb, xarc) > 0, "write GNU longname fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "GNU 'L' extract -> 0");
+    assert(sys_access("/tmp/takumi-extract-out/shortname", 0) != 0, "header placeholder name NOT used");
+    var glrb = alloc(16);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/gnudir/a-long-gnu-name.txt", glrb, 16), 4, "GNU long-name file size 4");
+    assert_eq(memeq(glrb, "data", 4), 1, "GNU long-name file content");
+
     test_group("extract_archive: PAX 'x' path is traversal-guarded");
     # A malicious PAX path override must still hit _tar_path_is_safe.
     var pxbadrec = str_builder_new();
@@ -2334,6 +2370,9 @@ fn main() {
     sys_unlink("/tmp/takumi-extract-out/sized.txt");
     sys_unlink("/tmp/takumi-extract-out/lnk2");
     sys_unlink("/tmp/takumi-extract-out/run.sh");
+    sys_unlink("/tmp/takumi-extract-out/gnudir/a-long-gnu-name.txt");
+    sys_unlink("/tmp/takumi-extract-out/shortname");
+    sys_rmdir("/tmp/takumi-extract-out/gnudir");
     sys_rmdir("/tmp/takumi-extract-out/sub");
     sys_rmdir("/tmp/takumi-extract-out/v7d");
     sys_rmdir("/tmp/takumi-extract-out/pured");
