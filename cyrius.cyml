@@ -1,17 +1,17 @@
 [package]
 name = "takumi"
-version = "0.9.1"
+version = "0.9.2"
 description = "takumi — Cyrius port (from 2034 lines of Rust)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.2.16"
+cyrius = "6.2.18"
 
 [build]
 entry = "src/main.cyr"
 output = "takumi"
 
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "slice", "syscalls", "io", "args", "assert", "hashmap", "tagged", "fs", "freelist", "ct", "keccak", "chrono", "process", "bayan", "random", "thread_local", "sync", "sankoch"]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "slice", "syscalls", "io", "args", "assert", "hashmap", "tagged", "fs", "freelist", "ct", "keccak", "chrono", "process", "bayan", "random", "thread_local", "thread", "sankoch", "net", "tls", "fdlopen", "dynlib", "mmap", "async", "sandhi"]
 
 [deps.sigil]
 git = "https://github.com/MacCracken/sigil.git"

@@ -10,6 +10,7 @@ include "src/ark.cyr"
 include "src/package.cyr"
 include "src/ark_format.cyr"
 include "src/source.cyr"
+include "src/fetch.cyr"
 include "src/engine.cyr"
 include "src/build.cyr"
 include "src/cli.cyr"
@@ -1483,7 +1484,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.1"), "builder stamp is takumi/0.9.1");
+    assert(streq(man_builder(cam_m), "takumi/0.9.2"), "builder stamp is takumi/0.9.2");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -2030,6 +2031,31 @@ fn main() {
     # src/cli.cyr — dispatch + commands (exit-code assertions).
     # ===================================================================
     # ===================================================================
+    # src/fetch.cyr — glob matcher + source dispatch (no network here).
+    # ===================================================================
+    test_group("fetch: _glob_match");
+    assert_eq(_glob_match("foo.tar.gz", "foo.tar.gz"), 1, "exact match");
+    assert_eq(_glob_match("foo-*.tar.gz", "foo-1.0.tar.gz"), 1, "star in middle");
+    assert_eq(_glob_match("*-src.tar.gz", "patra-1.2.3-src.tar.gz"), 1, "leading star");
+    assert_eq(_glob_match("foo-*", "foo-anything-here"), 1, "trailing star");
+    assert_eq(_glob_match("foo-*.tar.gz", "bar-1.0.tar.gz"), 0, "literal prefix mismatch");
+    assert_eq(_glob_match("a?c", "abc"), 1, "question matches one");
+    assert_eq(_glob_match("a?c", "ac"), 0, "question needs one char");
+    assert_eq(_glob_match("foo.tar.gz", "foo.tar.bz2"), 0, "suffix mismatch");
+
+    test_group("fetch_source: LOCAL -> no-source code (no network)");
+    var fl_src = src_new_local(vec_new());
+    var fl_recipe_pkg = pkg_new("meta", "1.0", "d", "MIT", vec_new(), 1, "x86_64");
+    var fl_dummy = recipe_new(fl_recipe_pkg, fl_src, dep_new(vec_new(), vec_new()),
+                              bld_new(0, 0, 0, 0, 0, 0), sec_new(vec_new(), 0, 0));
+    assert_eq(fetch_source(recipe_source(fl_dummy), "/tmp/takumi-nofetch"), 0 - FETCH_ERR_NO_SOURCE, "LOCAL -> NO_SOURCE");
+
+    test_group("fetch: github API URL + JSON path builders");
+    assert(streq(_gh_api_url("MacCracken/patra"), "https://api.github.com/repos/MacCracken/patra/releases/latest"), "api url");
+    assert(streq(_gh_json_path(0, "name"), "assets.0.name"), "json path [0].name");
+    assert(streq(_gh_json_path(3, "browser_download_url"), "assets.3.browser_download_url"), "json path [3].url");
+
+    # ===================================================================
     # src/build.cyr — build execution (hermetic, trivial shell steps).
     # ===================================================================
     test_group("build: _sh_squote");
@@ -2151,12 +2177,29 @@ fn main() {
     assert_eq(cmd_list("/tmp/takumi-cli-does-not-exist"), 1, "list missing dir -> 1");
     assert_eq(cmd_order(cli_dir), 0, "order dir -> 0");
     assert_eq(cmd_build(cli_dir, 0), 2, "build dir (dry-run) -> 2");
-    # execute mode over local/url fixtures: local meta-package builds (empty
-    # steps -> COMPLETE -> packaged); url fixtures skip (source not staged).
-    assert_eq(cmd_build(cli_dir, 1), 0, "build --execute -> 0 (local builds, url skipped)");
     # via dispatch too
     assert_eq(cli_dispatch(pkg_vec("order", cli_dir, 0, 0, 0, 0)), 0, "dispatch order -> 0");
     assert_eq(cli_dispatch(pkg_vec("build", cli_dir, 0, 0, 0, 0)), 2, "dispatch build -> 2");
+
+    # build --execute over a LOCAL-only dir (no network): the meta-package
+    # builds (empty steps -> COMPLETE) and packages to .ark, exit 0.
+    var loc_dir = "/tmp/takumi-cli-local";
+    sys_unlink("/tmp/takumi-cli-local/meta.cyml");
+    sys_rmdir(loc_dir);
+    assert_eq(sys_mkdir(loc_dir, 0x1FF), 0, "cli: mkdir local dir");
+    var lsb = str_builder_new();
+    str_builder_add_cstr(lsb, "[package]\nname = \"metapkg\"\nversion = \"1.0.0\"\n");
+    str_builder_add_cstr(lsb, "description = \"meta\"\nlicense = \"MIT\"\n\n");
+    str_builder_add_cstr(lsb, "[source]\nlocal = true\n");
+    var lc = str_cstr(str_builder_build(lsb));
+    assert(file_write_all("/tmp/takumi-cli-local/meta.cyml", lc, strlen(lc)) > 0, "cli: write local recipe");
+    var rmlb = vec_new();
+    vec_push(rmlb, "/bin/rm"); vec_push(rmlb, "-rf"); vec_push(rmlb, "/tmp/takumi-build");
+    exec_vec(rmlb);
+    assert_eq(cmd_build(loc_dir, 1), 0, "build --execute (local) -> 0");
+    exec_vec(rmlb);
+    sys_unlink("/tmp/takumi-cli-local/meta.cyml");
+    sys_rmdir(loc_dir);
 
     sys_unlink("/tmp/takumi-cli-test/zlib.cyml");
     sys_unlink("/tmp/takumi-cli-test/openssl.cyml");

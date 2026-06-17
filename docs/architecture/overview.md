@@ -63,8 +63,9 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 1. Load:     .cyml files -> CymlDoc (cyml_parse) -> TOML header (toml_parse) -> BuildRecipe structs
 2. Validate: BuildRecipe -> Result<warnings> (reject malformed early)
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
-4. Source:   verify_source_hash (SHA-256 vs recipe) -> extract_archive
-             (.tar/.tar.gz/.tar.xz/.tar.bz2, path-traversal-guarded) -> source tree (src/source.cyr)
+4. Source:   fetch_source (HTTPS via sandhi, src/fetch.cyr) -> verify_source_hash
+             (SHA-256 vs recipe) -> extract_archive (.tar/.gz/.xz/.bz2,
+             path-traversal-guarded) -> source tree (src/source.cyr)
 5. Build:    exec_build runs [build] steps via /bin/sh -c (unprivileged) -> fake-root (src/build.cyr)
 6. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr,
              symlink-aware) -> serialized .ark v1 (src/ark_format.cyr): TOML
@@ -76,8 +77,10 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 A recipe's `[source]` is one of three kinds (`SourceSpec.kind`, see
 [ADR 0004](../adr/0004-recipe-source-model.md)): a plain `url` + `sha256`, a
 `github_release` + `release_asset` + `sha256`, or `local = true` (a meta/alias
-package with no upstream). The parser and validator branch by kind; resolving a
-GitHub asset to a URL and downloading are deferred to the network item.
+package with no upstream). `fetch_source` (`src/fetch.cyr`, HTTPS via stdlib
+`sandhi` with the native TLS backend) downloads `url`/`github_release` sources —
+resolving a GitHub asset via the releases API + glob match — then the hard
+sha256 gate runs before extraction ([ADR 0006](../adr/0006-source-download.md)).
 `verify_source_hash(path, expected_sha256)` confirms a staged tarball matches the
 recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar`,
 `.tar.gz`, `.tar.xz`, and `.tar.bz2` (all via stdlib `sankoch` — gzip

@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.2] - 2026-06-17
+
+Source download over HTTPS — completing the `fetch → verify → extract → build
+→ package` pipeline. The toolchain bump to **6.2.17 → 6.2.18** is folded into
+this release. 770 tests (was 756).
+
+### Added
+
+- **`src/fetch.cyr` — HTTPS source download** via stdlib `sandhi` (HTTP/1.1+2,
+  redirects, response cap, timeouts). `fetch_source(src, dest)` handles:
+  - `url` sources → direct GET;
+  - `github_release` → GET `releases/latest`, walk `assets.<i>` via dotted-path
+    JSON, `_glob_match` the `release_asset` pattern, fetch the asset URL;
+  - `local` → no-op (caller skips).
+
+  Uses sandhi's **native TLS backend** (`sandhi_tls_use_native`) — no
+  libssl/OpenSSL runtime dependency.
+- **`build --execute` now fetches**: for non-local recipes it downloads the
+  source, `verify_source_hash` against the recipe's pinned sha256 (**hard
+  gate** — mismatch aborts; an unverified artifact is never extracted), then
+  `extract_archive` and builds. Fail-closed throughout.
+- Tests: `_glob_match` (`*`/`?`/literal/mismatch), GitHub API URL + JSON-path
+  builders, `fetch_source(LOCAL)` dispatch. The integration harness drives the
+  **full fetch → verify → extract → build → package** path against a loopback
+  HTTP server (real download, no external dependency) — exit 0 with the `.ark`
+  and installed file produced.
+- [ADR 0006](docs/adr/0006-source-download.md) — source download.
+
+### Changed
+
+- Toolchain pin **6.2.17 → 6.2.18**; `lib/` re-vendored. `[deps] stdlib` gains
+  `sandhi` + its stack (`net`/`tls`/`fdlopen`/`dynlib`/`mmap`/`async`), and
+  `sync` → `thread` (one mutex provider) — which also retired the long-standing
+  `thread_create`/`thread_join` baseline warnings.
+- Builder stamp + `takumi_version()` → 0.9.2.
+- Roadmap: source download → Completed.
+
+### Fixed
+
+- **Download cap**: the initial `max_response_bytes` of 512 MiB made every
+  sandhi fetch fail (it pre-allocates the cap; ≳256 MiB exhausts the
+  allocator). Lowered to **128 MiB**, found during live loopback bring-up.
+
+### Notes
+
+- Verified end-to-end over a loopback HTTP server (the harness). External-host
+  fetches additionally need the environment to permit the binary's raw outbound
+  TCP. Response cap is 128 MiB (in-memory); streaming large sources is future
+  work.
+
 ## [0.9.1] - 2026-06-17
 
 Build execution — the keystone. takumi can now run a recipe's `[build]` steps

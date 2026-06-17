@@ -1,0 +1,172 @@
+# takumi — source download over HTTPS (via stdlib `sandhi`).
+#
+# Fetches a recipe's source to a local file so the existing
+# verify_source_hash -> extract_archive -> build pipeline can run. sandhi
+# is the stdlib HTTP/1.1+2 client over TLS (libssl via fdlopen): it does
+# the TLS handshake, follows redirects (GitHub release -> CDN), caps the
+# response, and exposes dotted-path JSON for resolving release assets.
+#
+# TLS uses sandhi's pure-Cyrius native backend (`sandhi_tls_use_native`), so
+# there is no libssl/OpenSSL runtime dependency.
+#
+# Security (see docs/adr/0006-source-download.md): the fetched artifact is
+# always sha256-verified against the recipe's pinned hash BEFORE it is
+# extracted or used (the caller's hard gate). URL sources are https-only
+# (enforced by the validator); TLS cert verification is sandhi's default.
+
+enum FetchErr {
+    FETCH_ERR_NO_SOURCE = 1;   # LOCAL kind — nothing to fetch (caller skips)
+    FETCH_ERR_HTTP = 2;        # non-200, connection, or TLS failure
+    FETCH_ERR_WRITE = 3;       # could not write the destination file
+    FETCH_ERR_NO_ASSET = 4;    # github_release: no asset matched the pattern
+    FETCH_ERR_UNSUPPORTED = 5; # unknown source kind
+}
+
+# Caps on the in-memory response. sandhi pre-allocates max_response_bytes, so
+# the artifact cap is 128 MiB (covers virtually all source tarballs; larger
+# values exhaust the allocator -> request fails). JSON release list: 4 MiB.
+enum FetchLimit {
+    FETCH_MAX_BYTES = 134217728;
+    FETCH_MAX_JSON = 4194304;
+}
+
+# Glob match with `*` (any run) and `?` (any one). Linear with backtracking.
+# zugot release_asset patterns look like `patra-*-src.tar.gz`.
+fn _glob_match(pat, s) {
+    var pn = strlen(pat);
+    var sn = strlen(s);
+    var pi = 0;
+    var si = 0;
+    var star = 0 - 1;
+    var smatch = 0;
+    var go = 1;
+    while (go == 1) {
+        if (si < sn) {
+            var matched = 0;
+            if (pi < pn) {
+                var pc = load8(pat + pi) & 0xFF;
+                if (pc == 42) {
+                    star = pi;
+                    smatch = si;
+                    pi = pi + 1;
+                    matched = 1;
+                } else {
+                    if (pc == 63) {
+                        pi = pi + 1; si = si + 1; matched = 1;
+                    } else {
+                        if (pc == (load8(s + si) & 0xFF)) {
+                            pi = pi + 1; si = si + 1; matched = 1;
+                        }
+                    }
+                }
+            }
+            if (matched == 0) {
+                if (star != (0 - 1)) {
+                    pi = star + 1;
+                    smatch = smatch + 1;
+                    si = smatch;
+                } else {
+                    return 0;
+                }
+            }
+        } else {
+            go = 0;
+        }
+    }
+    # trailing pattern must be all '*'
+    while (pi < pn) {
+        if ((load8(pat + pi) & 0xFF) != 42) { return 0; }
+        pi = pi + 1;
+    }
+    return 1;
+}
+
+# GET `url` over HTTPS into `dest`. Returns 0, or 0 - FETCH_ERR_*.
+fn _sandhi_get_to_file(url, dest) {
+    var opts = sandhi_http_options_new();
+    sandhi_http_options_follow_redirects(opts, 1);
+    sandhi_http_options_max_hops(opts, 10);
+    sandhi_http_options_max_response_bytes(opts, FETCH_MAX_BYTES);
+    sandhi_http_options_total_ms(opts, 600000);
+    var r = sandhi_http_get_opts(url, 0, opts);
+    if (r == 0) { return 0 - FETCH_ERR_HTTP; }
+    if (sandhi_http_status(r) != 200) { return 0 - FETCH_ERR_HTTP; }
+    var body = sandhi_http_body(r);
+    var len = sandhi_http_body_len(r);
+    if (file_write_all(dest, body, len) != len) { return 0 - FETCH_ERR_WRITE; }
+    return 0;
+}
+
+# GitHub "latest release" API URL for an owner/repo slug.
+fn _gh_api_url(repo) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "https://api.github.com/repos/");
+    str_builder_add_cstr(sb, repo);
+    str_builder_add_cstr(sb, "/releases/latest");
+    return str_cstr(str_builder_build(sb));
+}
+
+# Dotted JSON path into the assets array: assets.<idx>.<field>.
+fn _gh_json_path(idx, field) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "assets.");
+    str_builder_add_int(sb, idx);
+    str_builder_add_cstr(sb, ".");
+    str_builder_add_cstr(sb, field);
+    return str_cstr(str_builder_build(sb));
+}
+
+# Resolve a github_release asset to its download URL: query the repo's
+# latest release, walk the assets array, and return the browser_download_url
+# of the first asset whose name matches `asset_pat`. Returns a cstr URL, or
+# 0 (no release / no matching asset / request failed).
+fn _gh_resolve_asset_url(repo, asset_pat) {
+    var hdrs = sandhi_headers_new();
+    sandhi_headers_add(hdrs, "User-Agent", "takumi");
+    sandhi_headers_add(hdrs, "Accept", "application/vnd.github+json");
+
+    var opts = sandhi_http_options_new();
+    sandhi_http_options_follow_redirects(opts, 1);
+    sandhi_http_options_max_hops(opts, 10);
+    sandhi_http_options_max_response_bytes(opts, FETCH_MAX_JSON);
+    sandhi_http_options_total_ms(opts, 60000);
+
+    var r = sandhi_http_get_opts(_gh_api_url(repo), hdrs, opts);
+    if (r == 0) { return 0; }
+    if (sandhi_http_status(r) != 200) { return 0; }
+    var body = sandhi_http_body(r);
+
+    var i = 0;
+    while (i < 1000) {
+        var npath = _gh_json_path(i, "name");
+        if (sandhi_json_has_path(body, npath) == 0) { return 0; }
+        var name = sandhi_json_get_string(body, npath);
+        if (name != 0) {
+            if (_glob_match(asset_pat, name) == 1) {
+                return sandhi_json_get_string(body, _gh_json_path(i, "browser_download_url"));
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Fetch `src` to `dest_path`. The caller verifies the sha256 and extracts.
+# Returns 0 on success, or 0 - FETCH_ERR_* (NO_SOURCE for LOCAL kinds, which
+# the caller treats as "nothing to fetch").
+fn fetch_source(src, dest_path) {
+    var k = src_kind(src);
+    if (k == SRC_KIND_LOCAL) { return 0 - FETCH_ERR_NO_SOURCE; }
+    # Use the pure-Cyrius native TLS backend (no libssl/fdlopen dependency;
+    # the libssl bridge is deprecated/opt-in). Idempotent; safe per call.
+    sandhi_tls_use_native();
+    if (k == SRC_KIND_GITHUB) {
+        var url = _gh_resolve_asset_url(src_gh_repo(src), src_gh_asset(src));
+        if (url == 0) { return 0 - FETCH_ERR_NO_ASSET; }
+        return _sandhi_get_to_file(url, dest_path);
+    }
+    if (k == SRC_KIND_URL) {
+        return _sandhi_get_to_file(src_url(src), dest_path);
+    }
+    return 0 - FETCH_ERR_UNSUPPORTED;
+}

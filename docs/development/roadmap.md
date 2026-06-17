@@ -64,11 +64,18 @@
       [ADR 0005](../adr/0005-build-execution.md). Full coverage over real
       recipes waits on source download.
 
+- [x] Source download over HTTPS (0.9.2) — `src/fetch.cyr` `fetch_source` via
+      stdlib `sandhi` (native TLS, no libssl dep): `url` + `github_release`
+      (API + JSON + glob) kinds; wired into `build --execute` with a
+      verify-before-extract hard gate. Security model in
+      [ADR 0006](../adr/0006-source-download.md). Verified end-to-end over a
+      loopback HTTP server (full fetch → verify → extract → build → package);
+      128 MiB response cap.
+
 ## Backlog (0.9.x)
 
-- [ ] Source download (network fetch over HTTPS) — incl. resolving
-      `github_release` → asset URL; pairs with `verify_source_hash`. Unblocks
-      `build --execute` over real (non-local) recipes.
+- [ ] Tarball-root → build-cwd refinement (use the archive's single top-level
+      dir as the build cwd); streaming download for sources > 128 MiB
 - [ ] Patch application
 - [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
       (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.

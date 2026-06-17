@@ -52,17 +52,50 @@ echo "== list / order / build over fixtures dir =="
 "$BIN" order "$FIXTURES" >/dev/null 2>&1;  check "order" 0 $?
 "$BIN" build "$FIXTURES" >/dev/null 2>&1;  check "build (dry-run plan)" 2 $?
 
-echo "== build --execute (local builds; url/github skip, no download yet) =="
-rm -rf /tmp/takumi-build
-"$BIN" build "$FIXTURES" --execute >/dev/null 2>&1; check "build --execute" 0 $?
-# the local meta-package (libgbm) should have produced a .ark
+echo "== build --execute over a LOCAL-only dir (no network) =="
+rm -rf /tmp/takumi-build /tmp/takumi-it-local
+mkdir -p /tmp/takumi-it-local
+cp "$FIXTURES/libgbm.cyml" /tmp/takumi-it-local/    # local meta-package, no source
+"$BIN" build /tmp/takumi-it-local --execute >/dev/null 2>&1; check "build --execute (local)" 0 $?
 if [ -f /tmp/takumi-build/out/libgbm.ark ]; then
   echo "  ok   local package produced libgbm.ark"
 else
   echo "  FAIL no .ark produced for the local package"
   fails=$((fails + 1))
 fi
-rm -rf /tmp/takumi-build
+rm -rf /tmp/takumi-build /tmp/takumi-it-local
+
+# Full fetch -> verify -> extract -> build -> package over a LOOPBACK server
+# (no external network; proves the real download path end to end). Needs
+# python3 + tar; skipped otherwise.
+if command -v python3 >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+  echo "== build --execute over loopback HTTP (real fetch) =="
+  SRV=/tmp/takumi-it-srv; REC=/tmp/takumi-it-rec
+  rm -rf "$SRV" "$REC" /tmp/takumi-build; mkdir -p "$SRV/pkgsrc" "$REC"
+  echo "loopback source" > "$SRV/pkgsrc/README"
+  tar czf "$SRV/demo-1.0.tar.gz" -C "$SRV" pkgsrc
+  SHA=$(sha256sum "$SRV/demo-1.0.tar.gz" | cut -d' ' -f1)
+  {
+    echo '[package]'; echo 'name = "demo"'; echo 'version = "1.0"'
+    echo 'description = "loopback fetch demo"'; echo 'license = "MIT"'; echo
+    echo '[source]'; echo 'url = "http://127.0.0.1:8097/demo-1.0.tar.gz"'
+    echo "sha256 = \"$SHA\""; echo
+    echo '[build]'; echo 'install = "mkdir -p $PKG/usr/share && cp pkgsrc/README $PKG/usr/share/demo-README"'
+  } > "$REC/demo.cyml"
+  ( cd "$SRV" && python3 -m http.server 8097 >/dev/null 2>&1 & echo $! > /tmp/takumi-it-srv.pid )
+  sleep 1
+  "$BIN" build "$REC" --execute >/dev/null 2>&1; check "build --execute (loopback fetch)" 0 $?
+  if [ -f /tmp/takumi-build/out/demo.ark ] && [ -f /tmp/takumi-build/demo/pkg/usr/share/demo-README ]; then
+    echo "  ok   fetched, verified, extracted, built, packaged demo.ark"
+  else
+    echo "  FAIL loopback build did not produce the expected artifacts"
+    fails=$((fails + 1))
+  fi
+  kill "$(cat /tmp/takumi-it-srv.pid 2>/dev/null)" 2>/dev/null
+  rm -rf "$SRV" "$REC" /tmp/takumi-build /tmp/takumi-it-srv.pid
+else
+  echo "== loopback fetch test skipped (needs python3 + tar) =="
+fi
 
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"

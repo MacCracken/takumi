@@ -29,13 +29,22 @@ enum IoError {
     IoOther;
 }
 
-# Open flags
+# Open flags. On EVERY non-agnos target lib/syscalls.cyr's per-arch peer already
+# defines O_* with the CORRECT per-target values — and Darwin's differ from Linux's
+# (O_CREAT 0x200 vs 64, O_TRUNC 0x400 vs 512, O_APPEND 0x8 vs 1024). io.cyr is
+# included AFTER syscalls.cyr, so redefining O_* here used to OVERRIDE the Darwin
+# values with Linux ones (last-def-wins) → file writes silently failed on
+# arm64-macOS (issue 2026-06-17). So we DON'T define them on non-agnos. Only agnos
+# needs them: its peer exposes AO_* (different bits) and file_open bridges O_*→AO_*
+# below using these neutral Linux-shaped masks — so agnos owns the O_* here.
+#ifdef CYRIUS_TARGET_AGNOS
 var O_RDONLY = 0;
 var O_WRONLY = 1;
 var O_RDWR = 2;
 var O_CREAT = 64;
 var O_TRUNC = 512;
 var O_APPEND = 1024;
+#endif
 
 # flock modes
 var LOCK_SH = 1;
