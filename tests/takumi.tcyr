@@ -38,6 +38,16 @@ fn set_deps(adj, pkg, d1, d2, d3) {
     return 0;
 }
 
+# Zero-padded 3-digit package name "pNNN" (for the large-graph topo test).
+fn _p3(i) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "p");
+    if (i < 100) { str_builder_add_byte(sb, 48); }
+    if (i < 10) { str_builder_add_byte(sb, 48); }
+    str_builder_add_int(sb, i);
+    return str_cstr(str_builder_build(sb));
+}
+
 # ---- validate_recipe baseline fixtures --------------------------------
 
 fn _valid_pkg() {
@@ -586,6 +596,44 @@ fn main() {
     assert(streq(vec_get(order_a, 1), vec_get(order_b, 1)), "index 1 matches");
     assert(streq(vec_get(order_a, 2), vec_get(order_b, 2)), "index 2 matches");
     assert(streq(vec_get(order_a, 3), vec_get(order_b, 3)), "index 3 matches");
+
+    test_group("resolve_build_order: large graph (312-pkg chain, scale + determinism)");
+    # A 312-node chain p000->p001->...->p311 (> the 309-package base graph,
+    # v1.0 criterion 5). Each package depends on the previous, so the topo order
+    # is forced to ascending — a strong correctness + scale + determinism check.
+    var BIGN = 312;
+    var bigpkgs = vec_new();
+    var bigadj = map_new();
+    var bi = 0;
+    while (bi < BIGN) {
+        var nm = _p3(bi);
+        vec_push(bigpkgs, nm);
+        if (bi > 0) {
+            var dv = vec_new();
+            vec_push(dv, _p3(bi - 1));
+            map_set(bigadj, nm, dv);
+        }
+        bi = bi + 1;
+    }
+    var bigres = resolve_build_order(bigpkgs, bigadj);
+    assert_eq(is_ok(bigres), 1, "312-chain resolves (no false cycle)");
+    var bigord = payload(bigres);
+    assert_eq(vec_len(bigord), BIGN, "all 312 packages emitted");
+    var ok_seq = 1;
+    var ci = 0;
+    while (ci < BIGN) {
+        if (streq(vec_get(bigord, ci), _p3(ci)) == 0) { ok_seq = 0; }
+        ci = ci + 1;
+    }
+    assert_eq(ok_seq, 1, "every dependency precedes its dependent (p000..p311)");
+    var bigord2 = payload(resolve_build_order(bigpkgs, bigadj));
+    var det = 1;
+    var di = 0;
+    while (di < BIGN) {
+        if (streq(vec_get(bigord, di), vec_get(bigord2, di)) == 0) { det = 0; }
+        di = di + 1;
+    }
+    assert_eq(det, 1, "large-graph order is deterministic across runs");
 
     test_group("cycle_members");
     var partial = vec_new();
@@ -1570,7 +1618,19 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.8"), "builder stamp is takumi/0.9.8");
+    assert(streq(man_builder(cam_m), "takumi/0.9.9"), "builder stamp is takumi/0.9.9");
+
+    test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
+    # strict decimal parse: value, or -1 on empty/null/non-digit.
+    assert_eq(_parse_uint_cstr("1700000000"), 1700000000, "valid epoch parses");
+    assert_eq(_parse_uint_cstr("0"), 0, "zero parses to 0 (not -1)");
+    assert_eq(_parse_uint_cstr(""), 0 - 1, "empty -> -1");
+    assert_eq(_parse_uint_cstr(0), 0 - 1, "null -> -1");
+    assert_eq(_parse_uint_cstr("12x4"), 0 - 1, "non-digit -> -1");
+    assert_eq(_parse_uint_cstr("  7"), 0 - 1, "leading space -> -1 (strict)");
+    # With SOURCE_DATE_EPOCH unset in the test env, resolve falls back to `now`.
+    # (The set-path is proven end-to-end by the integration reproducibility case.)
+    assert_eq(resolve_build_epoch(424242), 424242, "unset SOURCE_DATE_EPOCH -> wall clock");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");

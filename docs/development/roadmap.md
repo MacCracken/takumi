@@ -154,12 +154,23 @@
 
 ## v1.0 Criteria
 
-1. Can build the full AGNOS base system from zugot recipes
-2. Reproducible builds: same recipe + same sources = identical `.ark` output
-3. All packages have SHA-256 checksums
-4. All packages are signed
-5. Build order handles the full 309-package dependency graph
-6. Documentation complete: architecture, guides, examples, ADRs
-7. Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) and a
-   completed pre-v1 security audit
-8. Benchmark suite covers all hot paths
+Status: ✅ met · ◐ partial · ☐ open.
+
+1. ◐ Can build the full AGNOS base system from zugot recipes — the per-package
+   pipeline is complete + hardened; a full multi-package base-system build run
+   is still to be done.
+2. ✅ Reproducible builds: same recipe + same sources = identical `.ark` output
+   — deterministic writer + `SOURCE_DATE_EPOCH` (0.9.9); proven byte-identical
+   in the integration harness.
+3. ✅ All packages have SHA-256 checksums (manifest + per-file + root hash).
+4. ✅ All packages are signed (ed25519; ark re-verifies on read).
+5. ✅ Build order handles the full 309-package dependency graph — Kahn's
+   algorithm; covered by a 312-node hermetic test + a full-corpus `order` sweep
+   (535 packages) in integration (0.9.9).
+6. ✅ Documentation complete: architecture, guides, examples, ADRs — guides +
+   examples landed in 0.9.9 (11 ADRs, architecture overview, roadmap).
+7. ◐ Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) ✅ and a
+   completed pre-v1 security audit ☐ (the capstone; Landlock fs confinement
+   (0.10.0) lands first to harden the recipe-shell surface).
+8. ✅ Benchmark suite covers all hot paths (extract gz/xz/bz2, sha256,
+   ark_write, flags).

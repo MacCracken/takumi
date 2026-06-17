@@ -8,15 +8,16 @@
 # Exit codes:
 #   0  success
 #   1  operational error (bad/missing input, invalid recipe, dependency cycle)
-#   2  usage error, or a not-yet-implemented path (build execution is 0.9.x)
+#   2  usage error
 #
-# Build execution (configure/make/install) is not implemented yet, so `build`
-# runs as a dry-run that prints the plan and exits 2. See
-# docs/adr/0003-cli-surface.md.
+# `build <dir>` prints the plan and exits 2 (a dry run); `build <dir> --execute`
+# runs the full pipeline (fetch → verify → extract → patch → build → package)
+# and exits 0/1. See docs/adr/0003-cli-surface.md and the
+# docs/guides/building-packages.md guide.
 
 # Single source of the CLI version string. Keep in sync with VERSION,
 # cyrius.cyml, and the src/package.cyr builder stamp.
-fn takumi_version() { return "0.9.8"; }
+fn takumi_version() { return "0.9.9"; }
 
 # --- small output helpers ---------------------------------------------
 
@@ -47,7 +48,7 @@ fn _print_usage() {
     println("  validate <recipe.cyml>...   parse and validate recipes");
     println("  list <dir>                  list recipes in a directory");
     println("  order <dir>                 print topological build order");
-    println("  build <dir>                 plan a build (execution: 0.9.x)");
+    println("  build <dir> [--execute]     plan a build, or run it (-x) into a fake-root");
     println("  version                     print version");
     println("  help                        show this help");
     return 0;
@@ -260,7 +261,7 @@ fn _cli_build_execute(map, order, patch_dir) {
             return 1;
         }
         var entries = create_file_list(bcx_package_dir(ctx));
-        var man = create_ark_manifest(r, entries, "x86_64", clock_epoch_secs());
+        var man = create_ark_manifest(r, entries, "x86_64", resolve_build_epoch(clock_epoch_secs()));
         var apath = _ark_out_path(out_dir, name);
         if (ark_write(man, entries, bcx_package_dir(ctx), apath, 0) != 0) {
             _cli_say2("build: packaging failed: ", name);

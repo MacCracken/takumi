@@ -1,0 +1,35 @@
+[package]
+name = "hello"
+version = "2.12.1"
+description = "GNU hello — the canonical example program"
+license = "GPL-3.0-only"
+groups = ["base"]
+release = 1
+arch = "x86_64"
+
+[source]
+url = "https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
+sha256 = "8d99142afd92576f30b0cd7cb42a8dc6809998bc5d607d88761f512e26c7db20"
+patches = ["greeting.patch"]
+
+[depends]
+runtime = ["glibc"]
+build = ["gcc", "make"]
+
+[build]
+configure = "./configure --prefix=/usr"
+make = "make"
+install = "make DESTDIR=$PKG install"
+
+[security]
+hardening = ["pie", "fullrelro", "fortify", "stackprotector", "bindnow"]
+cflags = "-O2 -pipe"
+ldflags = "-Wl,--as-needed"
+
+---
+
+# GNU hello (example recipe)
+
+A minimal but complete recipe. The body below `---` is prose only — takumi reads
+the TOML header above. See `README.md` in this directory for the walkthrough and
+the matching `greeting.patch`.

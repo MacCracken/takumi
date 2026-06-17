@@ -208,6 +208,31 @@ else
 fi
 rm -rf "$NSREC" /tmp/takumi-build
 
+# Reproducibility (0.9.9): the same recipe built twice with a fixed
+# SOURCE_DATE_EPOCH must yield a byte-identical .ark (the build timestamp is the
+# only otherwise-floating input; the .ark writer is already deterministic).
+echo "== reproducible build (SOURCE_DATE_EPOCH -> identical .ark) =="
+RREC=/tmp/takumi-it-rrec
+rm -rf "$RREC" /tmp/takumi-build /tmp/takumi-it-repro-a.ark /tmp/takumi-it-repro-b.ark; mkdir -p "$RREC"
+{
+  echo '[package]'; echo 'name = "repro"'; echo 'version = "1.0"'
+  echo 'description = "reproducibility check"'; echo 'license = "MIT"'; echo
+  echo '[source]'; echo 'local = true'; echo
+  echo '[build]'; echo 'install = "mkdir -p $PKG/usr/share && printf payload > $PKG/usr/share/repro.txt"'
+} > "$RREC/repro.cyml"
+SOURCE_DATE_EPOCH=1700000000 "$BIN" build "$RREC" --execute >/dev/null 2>&1
+cp /tmp/takumi-build/out/repro.ark /tmp/takumi-it-repro-a.ark 2>/dev/null
+rm -rf /tmp/takumi-build
+SOURCE_DATE_EPOCH=1700000000 "$BIN" build "$RREC" --execute >/dev/null 2>&1
+cp /tmp/takumi-build/out/repro.ark /tmp/takumi-it-repro-b.ark 2>/dev/null
+if [ -f /tmp/takumi-it-repro-a.ark ] && cmp -s /tmp/takumi-it-repro-a.ark /tmp/takumi-it-repro-b.ark; then
+  echo "  ok   two builds with fixed SOURCE_DATE_EPOCH -> byte-identical .ark"
+else
+  echo "  FAIL builds not reproducible"
+  fails=$((fails + 1))
+fi
+rm -rf "$RREC" /tmp/takumi-build /tmp/takumi-it-repro-a.ark /tmp/takumi-it-repro-b.ark
+
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"
 if [ -d "$ZUGOT" ]; then
@@ -218,6 +243,21 @@ if [ -d "$ZUGOT" ]; then
     "$BIN" validate "$r" >/dev/null 2>&1 && pass=$((pass + 1))
   done < <(find "$ZUGOT" -name '*.cyml')
   echo "  validates $pass / $total (all parse; non-validating recipes carry empty source sha256)"
+  # Full-graph build order (v1.0 criterion 5): topologically order the entire
+  # corpus as one dependency graph; must succeed with no cycle.
+  if "$BIN" order "$ZUGOT" >/tmp/takumi-it-order.txt 2>&1; then
+    ocount=$(wc -l < /tmp/takumi-it-order.txt)
+    if [ "$ocount" -gt 0 ] && ! grep -qi cycle /tmp/takumi-it-order.txt; then
+      echo "  ok   full-graph order over $ocount packages (no cycle)"
+    else
+      echo "  FAIL order produced no output or reported a cycle"
+      fails=$((fails + 1))
+    fi
+  else
+    echo "  FAIL order exited nonzero over the corpus"
+    fails=$((fails + 1))
+  fi
+  rm -f /tmp/takumi-it-order.txt
   if [ "$pass" -lt "$ZUGOT_MIN_VALIDATE" ]; then
     echo "  FAIL corpus regression: $pass < baseline $ZUGOT_MIN_VALIDATE"
     fails=$((fails + 1))

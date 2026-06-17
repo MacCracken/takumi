@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.9] - 2026-06-17
+
+v1 criteria closers — reproducible builds, full-graph order coverage, and the
+first consumer guides + examples. 830 tests (was 819).
+
+### Added
+
+- **Reproducible build timestamp via `SOURCE_DATE_EPOCH`** (`src/package.cyr`
+  `resolve_build_epoch`). The `.ark` writer was already deterministic; the build
+  timestamp was the only floating input. `build --execute` now honors the
+  reproducible-builds `SOURCE_DATE_EPOCH` standard, so the same recipe + sources
+  + `SOURCE_DATE_EPOCH` yield a **byte-identical** `.ark` (falls back to the wall
+  clock when unset/invalid). Integration proves it: two builds with a fixed
+  `SOURCE_DATE_EPOCH` produce identical bytes. (v1.0 criterion 2.)
+- **Full-graph build-order coverage** (v1.0 criterion 5). A hermetic test
+  topologically orders a 312-package chain (> the 309-package base) and checks
+  scale, correctness (every dependency precedes its dependent), and determinism;
+  the integration harness runs `takumi order` over the entire zugot corpus as
+  one graph (535 packages, no cycle).
+- **Guides + examples** (v1.0 criterion 6) — `docs/guides/building-packages.md`
+  (recipe format, CLI, pipeline, build environment, sandbox, reproducibility)
+  and `docs/examples/hello/` (GNU hello with a real patch, annotated, with the
+  recipe + patch files).
+- Tests (+11): `_parse_uint_cstr` (strict decimal: value / -1 on empty / null /
+  non-digit / leading space), `resolve_build_epoch` fallback, and the
+  large-graph order test.
+
+### Changed
+
+- `build --execute` packaging uses `resolve_build_epoch(clock_epoch_secs())`.
+- Corrected the stale CLI usage text + header comment (build execution has been
+  implemented since 0.9.1; the help now documents `build [--execute]`).
+- Builder stamp + `takumi_version()` → 0.9.9.
+
 ## [0.9.8] - 2026-06-17
 
 Build sandbox, first bite — hermetic builds (network isolation) + a wall-clock
