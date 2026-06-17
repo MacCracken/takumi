@@ -121,11 +121,17 @@ Each build step runs in the sandbox:
   hermetic: a step cannot fetch un-pinned inputs. Created unprivileged via a user
   namespace; best-effort (where unprivileged user namespaces are unavailable the
   step runs un-isolated, and `build --execute` says so).
+- **Filesystem confinement (Landlock)** — the step can read and execute the
+  whole system (toolchain, headers, libs) but can only **write** under `/tmp`
+  (which holds the build root and `$PKG`/DESTDIR) and `/dev`. So `/usr`, `/etc`,
+  `$HOME`, and the rest are read-only to the build — a buggy `install` can't
+  escape DESTDIR. Best-effort (reported when unavailable).
 - **Wall-clock timeout** — a runaway step is killed (whole process group), so a
   hung build can't wedge the builder.
 
-This is hermeticity + liveness hardening, not a containment boundary against
-malicious recipes (recipes are trusted, sources are sha-pinned).
+`build --execute` prints which layers are active. This is hermeticity +
+confinement + liveness hardening, not a containment boundary against malicious
+recipes (recipes are trusted, sources are sha-pinned).
 
 ## Reproducible builds
 

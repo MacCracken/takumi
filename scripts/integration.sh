@@ -208,6 +208,38 @@ else
 fi
 rm -rf "$NSREC" /tmp/takumi-build
 
+# Build sandbox: filesystem confinement (0.10.0). A build step tries to write to
+# a user-writable path OUTSIDE the build/temp area (so the block is Landlock, not
+# file permissions) and also writes into $PKG. When the CLI reports confinement
+# active, the escape must be blocked ("confined") and the $PKG write must
+# succeed. Tolerant: where Landlock is unavailable we only assert the build ran.
+echo "== build --execute filesystem confinement (Landlock) =="
+FSREC=/tmp/takumi-it-fsrec
+# A path the build user can normally write but that is NOT a granted area.
+# /tmp is granted (it holds the build root), so put the probe under $HOME.
+FSPROBE="$HOME/.takumi-it-fsprobe"
+rm -rf "$FSREC" "$FSPROBE" /tmp/takumi-build; mkdir -p "$FSREC" "$FSPROBE"
+{
+  echo '[package]'; echo 'name = "fscheck"'; echo 'version = "1.0"'
+  echo 'description = "sandbox landlock check"'; echo 'license = "MIT"'; echo
+  echo '[source]'; echo 'local = true'; echo
+  echo '[build]'; echo "install = \"mkdir -p \$PKG/etc && (touch $FSPROBE/escaped 2>/dev/null && echo escaped || echo confined) > \$PKG/etc/fs.txt\""
+} > "$FSREC/fscheck.cyml"
+FSOUT=$("$BIN" build "$FSREC" --execute 2>&1); fsrc=$?
+check "build --execute (sandbox fs build ok)" 0 $fsrc
+FSRES=$(cat /tmp/takumi-build/fscheck/pkg/etc/fs.txt 2>/dev/null)
+if echo "$FSOUT" | grep -q "filesystem confinement: active"; then
+  if [ "$FSRES" = "confined" ] && [ ! -e "$FSPROBE/escaped" ]; then
+    echo "  ok   Landlock active: write outside the build area was blocked"
+  else
+    echo "  FAIL confinement reported active but escape was '$FSRES' (file present: $([ -e "$FSPROBE/escaped" ] && echo yes || echo no))"
+    fails=$((fails + 1))
+  fi
+else
+  echo "  ok   Landlock unavailable here; build still ran, time-bounded"
+fi
+rm -rf "$FSREC" "$FSPROBE" /tmp/takumi-build
+
 # Reproducibility (0.9.9): the same recipe built twice with a fixed
 # SOURCE_DATE_EPOCH must yield a byte-identical .ark (the build timestamp is the
 # only otherwise-floating input; the .ark writer is already deterministic).

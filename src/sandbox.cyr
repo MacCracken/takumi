@@ -110,12 +110,98 @@ fn sandbox_net_available() {
     return 0;
 }
 
+# --- Landlock filesystem confinement (Linux 5.13+, unprivileged) ------
+# Confine a build step's *writes* to the build/temp area (everything else is
+# read+exec only), so a buggy or hostile `install` can't scribble over the
+# system. Landlock is a restrict-only LSM: it can only subtract from what the
+# process already has, needs no privilege, and survives execve. Access-right
+# bits (uapi/linux/landlock.h, ABI 1 / kernel 5.13).
+enum LandlockFs {
+    LL_EXECUTE = 1;
+    LL_WRITE_FILE = 2;
+    LL_READ_FILE = 4;
+    LL_READ_DIR = 8;
+    LL_REMOVE_DIR = 16;
+    LL_REMOVE_FILE = 32;
+    LL_MAKE_CHAR = 64;
+    LL_MAKE_DIR = 128;
+    LL_MAKE_REG = 256;
+    LL_MAKE_SOCK = 512;
+    LL_MAKE_FIFO = 1024;
+    LL_MAKE_BLOCK = 2048;
+    LL_MAKE_SYM = 4096;
+}
+
+enum LandlockMisc {
+    LL_RULE_PATH_BENEATH = 1;
+    LL_CREATE_RULESET_VERSION = 1;   # version-query flag for create_ruleset
+    LL_PR_SET_NO_NEW_PRIVS = 38;
+    LL_O_PATH_CLOEXEC = 0x280000;    # O_PATH (0x200000) | O_CLOEXEC (0x80000)
+}
+
+# The full ABI-1 access set the ruleset governs: every write/create/remove/exec
+# right. Anything governed but not granted by a rule is denied.
+fn _ll_handled() {
+    return LL_EXECUTE | LL_WRITE_FILE | LL_READ_FILE | LL_READ_DIR | LL_REMOVE_DIR
+    | LL_REMOVE_FILE | LL_MAKE_CHAR | LL_MAKE_DIR | LL_MAKE_REG | LL_MAKE_SOCK
+    | LL_MAKE_FIFO | LL_MAKE_BLOCK | LL_MAKE_SYM;
+}
+# Read + traverse + execute (no write/create/remove): the whole tree.
+fn _ll_ro() { return LL_READ_FILE | LL_READ_DIR | LL_EXECUTE; }
+# Full read+write+create+remove: the build/temp/dev areas.
+fn _ll_rw() { return _ll_handled(); }
+
+# Add one PATH_BENEATH rule (open an O_PATH fd to `path`, grant `allowed`).
+# Returns 0, or 0 - 1 if the path can't be opened or the rule is rejected.
+fn _sandbox_landlock_add(ruleset_fd, path, allowed) {
+    var pfd = sys_open(path, LL_O_PATH_CLOEXEC, 0);
+    if (pfd < 0) { return 0 - 1; }
+    var beneath = alloc(16);
+    store64(beneath, allowed);
+    store32(beneath + 8, pfd);
+    var ret = sys_landlock_add_rule(ruleset_fd, LL_RULE_PATH_BENEATH, beneath, 0);
+    sys_close(pfd);
+    if (ret < 0) { return 0 - 1; }
+    return 0;
+}
+
+# Probe (parent-side, no side effects) whether Landlock is available: the
+# version-query form of create_ruleset returns the supported ABI (>= 1) or
+# -errno (ENOSYS / EOPNOTSUPP on an old or LSM-disabled kernel).
+fn sandbox_fs_available() {
+    if (sys_landlock_create_ruleset(0, 0, LL_CREATE_RULESET_VERSION) >= 1) { return 1; }
+    return 0;
+}
+
+# Child-side: confine writes to the build/temp area. The whole filesystem is
+# read+exec; `/tmp` (which holds the build root + DESTDIR) and `/dev` (e.g.
+# /dev/null) are read-write. Returns 0 if confinement was applied, 0 - 1 if it
+# couldn't be (kernel/setup) — caller proceeds unconfined (best-effort). Must
+# run in the forked child, before execve.
+fn _sandbox_apply_landlock() {
+    var attr = alloc(8);
+    store64(attr, _ll_handled());
+    var rfd = sys_landlock_create_ruleset(attr, 8, 0);
+    if (rfd < 0) { return 0 - 1; }
+    # A broken (partial) ruleset would wedge the build, so any add failure
+    # aborts confinement rather than restricting with a half-built policy.
+    if (_sandbox_landlock_add(rfd, "/", _ll_ro()) != 0) { sys_close(rfd); return 0 - 1; }
+    if (_sandbox_landlock_add(rfd, "/tmp", _ll_rw()) != 0) { sys_close(rfd); return 0 - 1; }
+    if (_sandbox_landlock_add(rfd, "/dev", _ll_rw()) != 0) { sys_close(rfd); return 0 - 1; }
+    if (sys_prctl(LL_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) { sys_close(rfd); return 0 - 1; }
+    var ret = sys_landlock_restrict_self(rfd, 0);
+    sys_close(rfd);
+    if (ret < 0) { return 0 - 1; }
+    return 0;
+}
+
 # Run argv (a vec of cstr; argv[0] is the binary) with an empty environment,
 # bounded by `timeout_ms`, optionally in a fresh network namespace
-# (`isolate_net` = 1). The child leads a new session so a timeout SIGKILLs its
+# (`isolate_net` = 1) and/or under Landlock filesystem confinement
+# (`confine_fs` = 1). The child leads a new session so a timeout SIGKILLs its
 # whole process group. Returns the child's exit code (0..255), 128 + signal if
 # it was signalled, 0 - 1 on fork/spawn failure, or 0 - 2 on timeout.
-fn exec_vec_sandboxed(args, timeout_ms, isolate_net) {
+fn exec_vec_sandboxed(args, timeout_ms, isolate_net, confine_fs) {
     var argc = vec_len(args);
     if (argc < 1) { return 0 - 1; }
     var cmd = vec_get(args, 0);
@@ -133,7 +219,8 @@ fn exec_vec_sandboxed(args, timeout_ms, isolate_net) {
     if (pid < 0) { return 0 - 1; }
     if (pid == 0) {
         sys_setsid();                                   # new process group for group-kill
-        if (isolate_net == 1) { _sandbox_apply_netns(); }   # best-effort hermeticity
+        if (isolate_net == 1) { _sandbox_apply_netns(); }    # best-effort hermeticity
+        if (confine_fs == 1) { _sandbox_apply_landlock(); }  # best-effort fs confinement
         sys_execve(cmd, argv, envp);
         sys_exit(127);
     }

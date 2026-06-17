@@ -13,11 +13,12 @@
 #     takumi runs them verbatim via `/bin/sh -c`; it adds no injection surface
 #     beyond the fixed, single-quoted cd/export prelude. Trust model: curated
 #     recipes + sha-pinned, verified sources.
-#   - Each step runs through the sandbox (src/sandbox.cyr, ADR 0011): a fresh
-#     network namespace (hermetic — no build-time network) + a wall-clock
-#     timeout. NO filesystem (Landlock) or seccomp confinement yet, and no
-#     PID/mount namespace beyond network isolation (later bites; operator still
-#     runs as a throwaway unprivileged build user).
+#   - Each step runs through the sandbox (src/sandbox.cyr, ADRs 0011/0012): a
+#     fresh network namespace (hermetic — no build-time network), Landlock
+#     filesystem confinement (writes limited to the build/temp area), and a
+#     wall-clock timeout. NO seccomp confinement yet, and no PID/mount namespace
+#     beyond network isolation (later bites; operator still runs as a throwaway
+#     unprivileged build user).
 #   - Fail-closed: stop at the first failing step; never package a partial
 #     fake-root.
 #
@@ -115,9 +116,11 @@ fn _build_cwd(ctx) {
 }
 
 # Run a single build step in `cwd`. Skips (returns 0) when step is absent/empty.
-# Runs through the sandbox: bounded by a wall-clock timeout and, when
-# `isolate_net` = 1, in a fresh network namespace (hermetic). See src/sandbox.cyr.
-fn _run_step(ctx, step, cwd, isolate_net) {
+# Runs through the sandbox: bounded by a wall-clock timeout and, when enabled,
+# in a fresh network namespace (`isolate_net`, hermetic) + under Landlock
+# filesystem confinement (`confine_fs`, writes limited to the build/temp area).
+# See src/sandbox.cyr.
+fn _run_step(ctx, step, cwd, isolate_net, confine_fs) {
     if (step == 0) { return 0; }
     if (strlen(step) == 0) { return 0; }
     var prelude = _build_env_prelude(ctx);
@@ -126,7 +129,7 @@ fn _run_step(ctx, step, cwd, isolate_net) {
     vec_push(args, "/bin/sh");
     vec_push(args, "-c");
     vec_push(args, wrapped);
-    return exec_vec_sandboxed(args, SANDBOX_TIMEOUT_MS, isolate_net);
+    return exec_vec_sandboxed(args, SANDBOX_TIMEOUT_MS, isolate_net, confine_fs);
 }
 
 # Stage build_root/<pkg>/{src,build,pkg}. The fake-root `pkg/` is emptied
@@ -174,11 +177,13 @@ fn _build_fail(pkgname, phase, rc, started) {
 # Run the six build phases in order, advancing BuildStatus, fail-closed.
 # `started` is the start epoch (caller passes clock_epoch_secs(); tests pass a
 # fixed value for deterministic started_at). `isolate_net` runs each step in a
-# fresh network namespace when 1 (the CLI probes `sandbox_net_available` once);
-# every step is bounded by the sandbox wall-clock timeout regardless. Returns a
-# BuildLogEntry with status BS_COMPLETE, or BS_FAILED + a fail_msg naming the
-# phase + exit code (a timeout reports as "terminated abnormally").
-fn exec_build(ctx, started, isolate_net) {
+# fresh network namespace when 1; `confine_fs` applies Landlock filesystem
+# confinement when 1 (the CLI probes `sandbox_net_available` /
+# `sandbox_fs_available` once). Every step is bounded by the sandbox wall-clock
+# timeout regardless. Returns a BuildLogEntry with status BS_COMPLETE, or
+# BS_FAILED + a fail_msg naming the phase + exit code (a timeout reports as
+# "terminated abnormally").
+fn exec_build(ctx, started, isolate_net, confine_fs) {
     var bld = recipe_build(bcx_recipe(ctx));
     var pkgname = pkg_name(recipe_package(bcx_recipe(ctx)));
 
@@ -188,17 +193,17 @@ fn exec_build(ctx, started, isolate_net) {
     # Phases in order. Status mapping (informational): pre_build+configure ->
     # CONFIGURING, make -> BUILDING, check -> TESTING, install+post_install ->
     # INSTALLING. Stop at the first non-zero exit (fail-closed).
-    var rc = _run_step(ctx, bld_pre_build(bld), cwd, isolate_net);
+    var rc = _run_step(ctx, bld_pre_build(bld), cwd, isolate_net, confine_fs);
     if (rc != 0) { return _build_fail(pkgname, "pre_build", rc, started); }
-    rc = _run_step(ctx, bld_configure(bld), cwd, isolate_net);
+    rc = _run_step(ctx, bld_configure(bld), cwd, isolate_net, confine_fs);
     if (rc != 0) { return _build_fail(pkgname, "configure", rc, started); }
-    rc = _run_step(ctx, bld_make(bld), cwd, isolate_net);
+    rc = _run_step(ctx, bld_make(bld), cwd, isolate_net, confine_fs);
     if (rc != 0) { return _build_fail(pkgname, "make", rc, started); }
-    rc = _run_step(ctx, bld_check(bld), cwd, isolate_net);
+    rc = _run_step(ctx, bld_check(bld), cwd, isolate_net, confine_fs);
     if (rc != 0) { return _build_fail(pkgname, "check", rc, started); }
-    rc = _run_step(ctx, bld_install(bld), cwd, isolate_net);
+    rc = _run_step(ctx, bld_install(bld), cwd, isolate_net, confine_fs);
     if (rc != 0) { return _build_fail(pkgname, "install", rc, started); }
-    rc = _run_step(ctx, bld_post_install(bld), cwd, isolate_net);
+    rc = _run_step(ctx, bld_post_install(bld), cwd, isolate_net, confine_fs);
     if (rc != 0) { return _build_fail(pkgname, "post_install", rc, started); }
 
     var end = clock_epoch_secs();

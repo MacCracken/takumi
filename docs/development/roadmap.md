@@ -124,13 +124,17 @@
       [ADR 0011](../adr/0011-build-sandbox.md). Verified live (build saw only
       `lo`; correct file ownership; overrun killed). First installment of
       ADR 0005's deferred sandbox.
-- [ ] Build sandbox — filesystem confinement (Landlock) — confine a step's
-      writes to DESTDIR + the build dir (read-only elsewhere). stdlib `agnosys`
-      `security_apply_landlock` (RO/RW fs rules) is the intended primitive; pulls
-      agnosys as a dep. Next sandbox bite.
+- [x] Build sandbox — filesystem confinement (Landlock) (0.10.0) —
+      `src/sandbox.cyr` confines a build step's writes to the build/temp area
+      (`/` read+exec, `/tmp` + `/dev` read-write) via Landlock, hand-rolled on
+      the `sys_landlock_*` stdlib wrappers (no agnosys dep). Best-effort + probed
+      (`sandbox_fs_available`). Model in
+      [ADR 0012](../adr/0012-landlock-fs-confinement.md). Verified live (a write
+      outside the build area is blocked; `$PKG` writes succeed).
 - [ ] Build sandbox — seccomp syscall filtering + PID/mount namespaces +
-      per-recipe timeout override + optional `--require-sandbox` (fail-closed).
-      Later sandbox bites. See [ADR 0011](../adr/0011-build-sandbox.md).
+      per-recipe timeout override + tighter per-build write area + optional
+      `--require-sandbox` (fail-closed). Later sandbox bites. See
+      [ADR 0011](../adr/0011-build-sandbox.md) / [0012](../adr/0012-landlock-fs-confinement.md).
 
 - [x] ark-side `.ark` reader / installer — **implemented in ark**
       (`ark/src/ark_package.cyr`): verifies root hash + ed25519 signature,
@@ -170,7 +174,8 @@ Status: ✅ met · ◐ partial · ☐ open.
 6. ✅ Documentation complete: architecture, guides, examples, ADRs — guides +
    examples landed in 0.9.9 (11 ADRs, architecture overview, roadmap).
 7. ◐ Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) ✅ and a
-   completed pre-v1 security audit ☐ (the capstone; Landlock fs confinement
-   (0.10.0) lands first to harden the recipe-shell surface).
+   completed pre-v1 security audit ☐ (the capstone). Sandbox hardening of the
+   recipe-shell surface is now substantial — network isolation + timeout
+   (0.9.8) + Landlock fs confinement (0.10.0); seccomp remains optional.
 8. ✅ Benchmark suite covers all hot paths (extract gz/xz/bz2, sha256,
    ark_write, flags).

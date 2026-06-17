@@ -17,7 +17,7 @@
 
 # Single source of the CLI version string. Keep in sync with VERSION,
 # cyrius.cyml, and the src/package.cyr builder stamp.
-fn takumi_version() { return "0.9.9"; }
+fn takumi_version() { return "0.10.0"; }
 
 # --- small output helpers ---------------------------------------------
 
@@ -188,10 +188,9 @@ fn cmd_order(dir) {
     return 0;
 }
 
-# Dry-run a build: validate all recipes, resolve order, print the plan,
-# then report that execution is not yet implemented. Exit 2.
 # Build-root for `--execute` mode. A documented placeholder until build roots
-# are configurable; staging + outputs live under it.
+# are configurable; staging + outputs live under it. (It is under /tmp, which
+# the Landlock policy grants read-write — see src/sandbox.cyr.)
 fn _cli_build_root() { return "/tmp/takumi-build"; }
 fn _cli_build_out() { return "/tmp/takumi-build/out"; }
 
@@ -212,14 +211,19 @@ fn _ark_out_path(out_dir, name) {
 fn _cli_build_execute(map, order, patch_dir) {
     var out_dir = _cli_build_out();
     _mkdir_p(out_dir);
-    # Probe once whether unprivileged net-namespace isolation is available, and
-    # report the build mode. Build steps are bounded by the sandbox timeout
-    # either way (see src/sandbox.cyr).
+    # Probe once which sandbox layers this host supports, and report the mode.
+    # Build steps are bounded by the sandbox timeout regardless (src/sandbox.cyr).
     var isolate = sandbox_net_available();
+    var confine = sandbox_fs_available();
     if (isolate == 1) {
-        println("build: network isolation: active (hermetic; build steps have no network)");
+        println("build: sandbox network isolation: active (hermetic; build steps have no network)");
     } else {
-        println("build: network isolation: unavailable (no unprivileged user namespaces); steps still time-bounded");
+        println("build: sandbox network isolation: unavailable (no unprivileged user namespaces)");
+    }
+    if (confine == 1) {
+        println("build: sandbox filesystem confinement: active (Landlock; writes limited to the build area)");
+    } else {
+        println("build: sandbox filesystem confinement: unavailable (no Landlock); steps still time-bounded");
     }
     var i = 0;
     while (i < vec_len(order)) {
@@ -254,7 +258,7 @@ fn _cli_build_execute(map, order, patch_dir) {
             _cli_say2("build: patch failed: ", name);
             return 1;
         }
-        var entry = exec_build(ctx, clock_epoch_secs(), isolate);
+        var entry = exec_build(ctx, clock_epoch_secs(), isolate, confine);
         if (ble_status(entry) == BS_FAILED) {
             _cli_say2("build: FAILED: ", name);
             _cli_say2("  ", ble_fail_msg(entry));

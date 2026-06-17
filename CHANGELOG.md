@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.10.0] - 2026-06-17
+
+Build sandbox, second bite — **Landlock filesystem confinement**: a build step's
+writes are restricted to the build/temp area; the rest of the filesystem is
+read-only to it. 835 tests (was 830).
+
+### Added
+
+- **Landlock filesystem confinement** (`src/sandbox.cyr`, hand-rolled on the
+  `sys_landlock_*` / `sys_prctl` stdlib wrappers — no new dependency). Before
+  `execve`, the build child creates a ruleset governing the full write/create/
+  remove/exec access set and grants: `/` read+execute, `/tmp` read-write (holds
+  the build root + `$PKG`/DESTDIR), `/dev` read-write (e.g. `/dev/null`), then
+  `PR_SET_NO_NEW_PRIVS` + `landlock_restrict_self`. Net: the step can read/exec
+  the whole system but can **only write** under `/tmp` and `/dev` — so `$PKG`
+  works while `/usr`, `/etc`, `$HOME`, … are read-only. Model in
+  [ADR 0012](docs/adr/0012-landlock-fs-confinement.md).
+- **`sandbox_fs_available()`** — a side-effect-free Landlock ABI probe; the CLI
+  reports network-isolation and filesystem-confinement modes separately before
+  the build loop.
+- `exec_vec_sandboxed` / `exec_build` / `_run_step` gained a `confine_fs` flag
+  (alongside `isolate_net`); the CLI passes the probe result.
+- Tests (+5): `sandbox_fs_available` boolean, and access-mask helper checks (RO
+  excludes `WRITE_FILE`; RW includes `WRITE_FILE` + `MAKE_DIR`). Integration: a
+  tolerant Landlock case (an out-of-build-area write is blocked when confinement
+  is active).
+
+### Verified
+
+- Live, with a negative control proving the target is normally user-writable: a
+  build step's write to `$HOME` was **blocked** (no file created) while its
+  write to `$PKG` succeeded — network isolation + Landlock both active.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.10.0. (Minor version bump: the build
+  sandbox is now substantively complete bar seccomp.)
+
+### Known limitations
+
+- Writable area is all of `/tmp` + `/dev` (protects every system location;
+  tighter per-build confinement is future work). No seccomp / PID / mount
+  namespace yet. Best-effort: where Landlock is unavailable the step runs
+  unconfined (reported). Not a containment boundary against malicious recipes
+  (recipes are trusted).
+
 ## [0.9.9] - 2026-06-17
 
 v1 criteria closers — reproducible builds, full-graph order coverage, and the
