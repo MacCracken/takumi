@@ -185,23 +185,26 @@ runbook; sandbox extras are audit-informed.)
   - Criterion 1 → met (demonstrated end-to-end real build + driver + runbook; a
     full 309-package compile is an operator/CI activity).
 
-- **0.11.1 — Pre-v1 security audit** (review only; no behavior change).
-  - Threat-model-driven, per-stage review: parse → fetch (TLS, verify-before-use)
-    → extract (tar/PAX/GNU parser bounds + integer overflow, decompression-bomb
-    resistance, path-traversal completeness, mode/mtime) → patch → sandboxed
-    build (recipe-shell trust boundary, sandbox best-effort/fail-open coverage)
-    → package/sign (ed25519, reproducibility).
-  - External research: compare hardening to makepkg / ebuild sandbox / Nix /
-    sbuild.
-  - Deliverable: `docs/compliance/security-audit-2026.md` — findings table
-    (id · area · severity · disposition), threat model, residual-risk statement.
-    Produces the remediation backlog. Closes criterion 7's audit half.
+- [x] **0.11.1 — Pre-v1 security audit** (review only). **Done.**
+  `docs/compliance/security-audit-2026.md`: threat-model-driven per-stage review
+  + external comparison + residual-risk + remediation plan. **22 findings (2
+  critical, 3 high, 6 medium, 6 low, 5 info)**, each verified against the code.
+  Closes criterion 7's audit half. The critical/high set drives 0.11.2–0.11.5.
 
-- **0.11.2 … 0.11.k — Audit remediation** (one bounded release per finding
-  cluster, severity order). Audit-warranted **sandbox extras** (likely seccomp +
-  `--require-sandbox`) fold in here; the rest defer to post-1.0. Pre-guessed
-  finding candidates: decompression-bomb output bound, parser bounds hardening,
-  opt-in fail-closed mode.
+- **0.11.2 — Input hardening** (audit cluster): PAX `size=`/record-length
+  overflow guards (SEC-01 CRITICAL, SEC-03 HIGH), https-only (SEC-06),
+  malformed-sha → error (SEC-07), GitHub URL re-validate (SEC-12), streaming
+  size cap (SEC-13), alloc-cap reconcile (SEC-14).
+- **0.11.3 — Sandbox hardening** (audit cluster): fail-closed userns maps
+  (SEC-04 HIGH), surface Landlock apply-failure + `--require-sandbox` (SEC-08),
+  confine writes to the build root not all `/tmp` (SEC-09), aarch64 timeout
+  sleep (SEC-10), `/dev` narrow (SEC-15), PID namespace for the timeout (SEC-11);
+  seccomp deferred post-1.0.
+- **0.11.4 — `.ark` reader robustness** (audit cluster): bounded/validated
+  parsing of untrusted packages (SEC-05 HIGH, SEC-16).
+- **0.11.5 — Package signing / key management** (audit cluster): supply a
+  signing key (SEC-02 CRITICAL) via `--signing-key`, fail-closed-or-warn when
+  absent; likely its own ADR.
 
 - **1.0.0 — v1 release**: all eight criteria ✅, audit findings resolved or
   risk-accepted, final docs/CHANGELOG/version pass, tag 1.0.0.
@@ -228,8 +231,9 @@ Status: ✅ met · ◐ partial · ☐ open.
 6. ✅ Documentation complete: architecture, guides, examples, ADRs — guides +
    examples landed in 0.9.9 (11 ADRs, architecture overview, roadmap).
 7. ◐ Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) ✅ and a
-   completed pre-v1 security audit ☐ (the capstone). Sandbox hardening of the
-   recipe-shell surface is now substantial — network isolation + timeout
-   (0.9.8) + Landlock fs confinement (0.10.0); seccomp remains optional.
+   completed pre-v1 security audit ◐ — the **audit itself is done** (0.11.1,
+   [security-audit-2026.md](../compliance/security-audit-2026.md): 22 findings).
+   Remediation of the 2 critical + 3 high + medium findings runs in 0.11.2–0.11.5
+   before 1.0; no critical/high is accepted as residual.
 8. ✅ Benchmark suite covers all hot paths (extract gz/xz/bz2, sha256,
    ark_write, flags).

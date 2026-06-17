@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.1] - 2026-06-17
+
+Pre-v1 security audit (review only; no behavior change). Closes the audit half of
+v1.0 criterion 7. 847 tests.
+
+### Added
+
+- **`docs/compliance/security-audit-2026.md`** — a threat-model-driven, per-stage
+  review of the whole pipeline (parse → fetch → verify → extract → patch →
+  sandboxed build → sign), with an external comparison to makepkg/ebuild/Nix/
+  sbuild, a residual-risk statement, and a remediation plan. **22 findings: 2
+  critical, 3 high, 6 medium, 6 low, 5 informational** — each verified against
+  the cited `file:line`.
+  - **Critical**: PAX `size=` decimal overflow → bounds bypass → OOB heap read
+    into the output file (`src/source.cyr`); packages produced **unsigned**
+    (`ark_write(…, 0)` — the signing seed is never supplied).
+  - **High**: PAX record-length overflow → OOB read; userns map-write failures
+    silently mis-own files; the `.ark` reader trusts length/offset fields
+    (OOB/OOM in the consumer).
+  - Medium/low: `http://` accepted vs the https-only invariant; malformed sha is
+    a warning not an error; Landlock apply-failure fail-open + grants all of
+    `/tmp`; aarch64 timeout sleep uses the wrong syscall; no streaming size cap;
+    `/dev` over-granted; and more.
+  - Confirmed solid: the sha256 verify-before-extract gate (no bypass), shell
+    quoting, path-traversal + symlink lexical guards, setuid/setgid/sticky
+    stripping, fork/exec hygiene, reproducibility.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.11.1.
+
+### Remediation (next)
+
+- **0.11.2** input hardening (PAX overflow guards + https-only + sha-error +
+  URL/size caps); **0.11.3** sandbox hardening (fail-closed maps, surface
+  Landlock failures, confine to build root, aarch64 sleep, PID namespace);
+  **0.11.4** `.ark` reader bounds; **0.11.5** package signing / key management.
+  No critical/high is accepted as residual — all land before 1.0.
+
 ## [0.11.0] - 2026-06-17
 
 Base-system build driver + operator runbook — `build --execute --keep-going`
