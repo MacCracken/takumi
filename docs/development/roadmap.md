@@ -36,11 +36,12 @@
       so symlinks are emitted as `ARK_FT_SYMLINK` with their `readlink`
       target and never followed; symlinked directories are no longer walked
       at their target (cycle risk closed).
-- [x] Source extraction `.tar` / `.tar.gz` (0.8.3) — `extract_archive` in
-      `src/source.cyr`: gzip sniff + ISIZE gunzip (stdlib `sankoch`), ustar
-      parse, and a fail-closed path-traversal guard. Format/guard model in
-      [ADR 0002](../adr/0002-source-extraction-safety.md). (`.tar.xz` /
-      `.tar.bz2` deferred — no xz/bzip2 codec in the stdlib yet.)
+- [x] Source extraction `.tar` / `.tar.gz` / `.tar.xz` / `.tar.bz2`
+      (0.8.3 gz; 0.8.5 xz/bz2) — `extract_archive` in `src/source.cyr`:
+      magic sniff + decode via stdlib `sankoch` (gzip ISIZE-sized; xz/bz2
+      grow-retry), ustar parse, and a fail-closed path-traversal guard.
+      Format/guard model in
+      [ADR 0002](../adr/0002-source-extraction-safety.md).
 - [x] Source SHA-256 verification (0.8.3) — `verify_source_hash` checks a
       staged tarball against the recipe's `source.sha256` before extraction.
 - [x] `main.cyr` CLI entry point (0.8.4) — `src/cli.cyr` `cli_dispatch` with
@@ -52,11 +53,6 @@
 
 - [ ] Source download (network fetch over HTTPS) — pairs with the existing
       `verify_source_hash` integrity check
-- [ ] Source extraction `.tar.xz` / `.tar.bz2` — blocked on decode-only
-      xz/LZMA and bzip2 in `sankoch`; tracked on sankoch's roadmap
-      ("Requested by consumers — decode-only xz / bzip2"). When it lands,
-      add the `FORMAT_*` sniff branches in `src/source.cyr` and lift the
-      rejection.
 - [ ] Patch application
 - [ ] Build execution (shell-out to configure/make/install)
 - [ ] Fake-root installation directory management

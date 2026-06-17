@@ -1407,7 +1407,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.8.4"), "builder stamp is takumi/0.8.4");
+    assert(streq(man_builder(cam_m), "takumi/0.8.5"), "builder stamp is takumi/0.8.5");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -1822,6 +1822,51 @@ fn main() {
         bf2 = bf2 + 1;
     }
     sys_unlink("/tmp/takumi-extract-big.tar.gz");
+
+    test_group("extract_archive: .tar.xz (sankoch xz decode + grow-retry)");
+    var xzsb = str_builder_new();
+    _tb_emit_file(xzsb, "x.txt", 48, 6, "xzdata");
+    _tb_terminator(xzsb);
+    var xztar = str_builder_build(xzsb);
+    var xzcap = str_len(xztar) + 4096;
+    var xzbuf = alloc(xzcap);
+    var xzn = xz_compress(str_data(xztar), str_len(xztar), xzbuf, xzcap);
+    assert(xzn > 0, "xz_compress produced output");
+    sys_unlink("/tmp/takumi-extract-out/x.txt");
+    sys_unlink("/tmp/takumi-extract.tar.xz");
+    assert(file_write_all("/tmp/takumi-extract.tar.xz", xzbuf, xzn) > 0, "write .tar.xz");
+    assert_eq(extract_archive("/tmp/takumi-extract.tar.xz", xdest), 0, "extract .tar.xz -> 0");
+    var xzrb = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/x.txt", xzrb, 64), 6, "x.txt size 6");
+    assert_eq(memeq(xzrb, "xzdata", 6), 1, "x.txt contents from xz");
+    # Corrupt the xz body (past the header) -> decode must fail, not crash.
+    store8(xzbuf + 40, (load8(xzbuf + 40) & 0xFF) ^ 0xFF);
+    sys_unlink("/tmp/takumi-extract.bad.tar.xz");
+    assert(file_write_all("/tmp/takumi-extract.bad.tar.xz", xzbuf, xzn) > 0, "write corrupt .tar.xz");
+    assert(extract_archive("/tmp/takumi-extract.bad.tar.xz", xdest) < 0, "corrupt xz -> error (rejected)");
+
+    test_group("extract_archive: .tar.bz2 (sankoch bzip2 decode + grow-retry)");
+    var bzsb = str_builder_new();
+    _tb_emit_file(bzsb, "b.txt", 48, 7, "bz2data");
+    _tb_terminator(bzsb);
+    var bztar = str_builder_build(bzsb);
+    var bzcap = str_len(bztar) + 4096;
+    var bzbuf = alloc(bzcap);
+    var bzn = bzip2_compress(str_data(bztar), str_len(bztar), bzbuf, bzcap);
+    assert(bzn > 0, "bzip2_compress produced output");
+    sys_unlink("/tmp/takumi-extract-out/b.txt");
+    sys_unlink("/tmp/takumi-extract.tar.bz2");
+    assert(file_write_all("/tmp/takumi-extract.tar.bz2", bzbuf, bzn) > 0, "write .tar.bz2");
+    assert_eq(extract_archive("/tmp/takumi-extract.tar.bz2", xdest), 0, "extract .tar.bz2 -> 0");
+    var bzrb = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/b.txt", bzrb, 64), 7, "b.txt size 7");
+    assert_eq(memeq(bzrb, "bz2data", 7), 1, "b.txt contents from bz2");
+
+    sys_unlink("/tmp/takumi-extract-out/x.txt");
+    sys_unlink("/tmp/takumi-extract-out/b.txt");
+    sys_unlink("/tmp/takumi-extract.tar.xz");
+    sys_unlink("/tmp/takumi-extract.bad.tar.xz");
+    sys_unlink("/tmp/takumi-extract.tar.bz2");
 
     test_group("extract_archive: empty archive (terminator only)");
     var esb = str_builder_new();

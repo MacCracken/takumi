@@ -64,7 +64,7 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 2. Validate: BuildRecipe -> Result<warnings> (reject malformed early)
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
 4. Source:   verify_source_hash (SHA-256 vs recipe) -> extract_archive
-             (.tar/.tar.gz, path-traversal-guarded) -> source tree (src/source.cyr)
+             (.tar/.tar.gz/.tar.xz/.tar.bz2, path-traversal-guarded) -> source tree (src/source.cyr)
 5. Build:    (not yet implemented) configure, make, install -> fake-root
 6. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr,
              symlink-aware) -> serialized .ark v1 (src/ark_format.cyr): TOML
@@ -74,8 +74,9 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 ### Source acquisition (`src/source.cyr`)
 
 `verify_source_hash(path, expected_sha256)` confirms a staged tarball matches the
-recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar` /
-`.tar.gz` (gzip via stdlib `sankoch`) with a fail-closed path-traversal guard
+recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar`,
+`.tar.gz`, `.tar.xz`, and `.tar.bz2` (all via stdlib `sankoch` — gzip
+ISIZE-sized, xz/bz2 grow-retry) with a fail-closed path-traversal guard
 (rejects `..`, absolute paths, and escaping symlink targets; unsupported tar
 entry types abort). Network download stays in 0.9.x; the safety model is in
 [ADR 0002](../adr/0002-source-extraction-safety.md).

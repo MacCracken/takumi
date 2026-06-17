@@ -1,7 +1,16 @@
 # 0002 — Source extraction safety (tar/tar.gz)
 
-- **Status**: accepted (takumi 0.8.3)
-- **Date**: 2026-06-16
+- **Status**: accepted (takumi 0.8.3); amended 0.8.5 — `.tar.xz`/`.tar.bz2` now supported
+- **Date**: 2026-06-16 (amended 2026-06-17)
+
+> **0.8.5 amendment**: the "no xz/bzip2 codec" limitation below is resolved.
+> stdlib `sankoch` 2.4.x (cyrius 6.2.16) ships xz/bzip2 decode, so
+> `extract_archive` now sniffs and decodes `.tar.xz` (magic `FD 37 7A 58 5A 00`)
+> and `.tar.bz2` (`BZh`) in addition to `.tar`/`.tar.gz`. xz/bz2 lack a
+> gzip-style ISIZE trailer, so the output buffer is grown on a
+> buffer-too-small return (capped at 512 MiB) rather than pre-sized. All other
+> decisions below (typeflag allow-list, path-traversal guard, fail-closed
+> policy) are unchanged and apply identically to the new envelopes.
 
 ## Context
 

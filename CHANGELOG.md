@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.5] - 2026-06-17
+
+`.tar.xz` and `.tar.bz2` source extraction — the codec gap from 0.8.3 is
+closed now that stdlib `sankoch` 2.4.x ships xz/bzip2 (bundled in cyrius
+6.2.16). 712 tests (was 700), all passing.
+
+### Added
+
+- **`.tar.xz` and `.tar.bz2` extraction** in `extract_archive`
+  (`src/source.cyr`): magic sniff for xz (`FD 37 7A 58 5A 00`) and bzip2
+  (`BZh`), decode via sankoch `decompress(FORMAT_XZ|FORMAT_BZIP2, ...)`. xz/bz2
+  carry no reliable uncompressed-size header, so the output buffer grows on a
+  buffer-too-small return (8× estimate, doubling, capped at 512 MiB);
+  corrupt/unsupported data fails fast as `SRC_ERR_DECOMPRESS`. The gzip path
+  keeps its exact ISIZE-sized decode.
+- Tests: `.tar.xz` and `.tar.bz2` roundtrip (built in-test via sankoch
+  `xz_compress`/`bzip2_compress` → extract → verify contents), plus a
+  corrupt-xz rejection (decode fails, no crash).
+- Benchmark `extract_tar_xz_10x400`: **471 µs** (xz container + LZMA2 decode +
+  grow-retry + parse + write), alongside `extract_tar_gz_10x400` (438 µs).
+
+### Changed
+
+- Toolchain pin **6.2.14 → 6.2.16**; vendored `lib/` re-synced (brings sankoch
+  2.4.3 with xz/bzip2 de/encode).
+- `SrcErr.SRC_ERR_GUNZIP` renamed to **`SRC_ERR_DECOMPRESS`** (now covers
+  gzip/xz/bzip2 decode failures); discriminant unchanged.
+- Builder stamp + `takumi_version()` → 0.8.5.
+- [ADR 0002](docs/adr/0002-source-extraction-safety.md) amended: `.tar.xz`/
+  `.tar.bz2` are now supported (was a documented limitation).
+- Roadmap: `.tar.xz`/`.tar.bz2` extraction moved to Completed.
+
 ## [0.8.4] - 2026-06-16
 
 The CLI entry point — `src/main.cyr` is no longer a stub. takumi is now a

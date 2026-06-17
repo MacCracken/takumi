@@ -513,6 +513,55 @@ fn bench_extract_tar_gz() {
     return 0;
 }
 
+# Extract a 10-file (400 B each) .tar.xz: xz container + LZMA2 decode
+# (sankoch) + grow-retry sizing + ustar parse + guard + write.
+fn bench_extract_tar_xz() {
+    var sb = str_builder_new();
+    var payload = alloc(400);
+    var p = 0;
+    while (p < 400) { store8(payload + p, 65 + (p & 15)); p = p + 1; }
+    var f = 0;
+    while (f < 10) {
+        var nm = str_builder_new();
+        str_builder_add_cstr(nm, "file");
+        str_builder_add_int(nm, f);
+        str_builder_add_cstr(nm, ".dat");
+        _bx_emit(sb, str_cstr(str_builder_build(nm)), 400, payload);
+        f = f + 1;
+    }
+    _sb_add_raw(sb, alloc(1024), 1024);
+    var tar = str_builder_build(sb);
+    var cap = str_len(tar) + 4096;
+    var xz = alloc(cap);
+    var xzn = xz_compress(str_data(tar), str_len(tar), xz, cap);
+    var path = "/tmp/takumi-bench-extract.tar.xz";
+    file_write_all(path, xz, xzn);
+    var dest = "/tmp/takumi-bench-extract-out";
+
+    var b = bench_new("extract_tar_xz_10x400");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 100) {
+        extract_archive(path, dest);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100);
+    bench_report(b);
+
+    var ci = 0;
+    while (ci < 10) {
+        var rm = str_builder_new();
+        str_builder_add_cstr(rm, "/tmp/takumi-bench-extract-out/file");
+        str_builder_add_int(rm, ci);
+        str_builder_add_cstr(rm, ".dat");
+        sys_unlink(str_cstr(str_builder_build(rm)));
+        ci = ci + 1;
+    }
+    sys_rmdir(dest);
+    sys_unlink(path);
+    return 0;
+}
+
 # Verify a 64 KiB source file's SHA-256 against its expected digest
 # (the integrity check run before extraction).
 fn bench_verify_source_hash() {
@@ -550,6 +599,7 @@ fn main() {
     bench_create_file_list();
     bench_ark_write();
     bench_extract_tar_gz();
+    bench_extract_tar_xz();
     bench_verify_source_hash();
     bench_sha256_1kb();
     bench_sha256_1mb();

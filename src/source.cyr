@@ -6,8 +6,9 @@
 #   2. extract_archive    — unpack a `.tar` / `.tar.gz` into a scratch dir,
 #      with strict path-traversal guards (tar-slip is the classic sink).
 #
-# Network download is intentionally NOT here (TLS surface; 0.9.x). `.tar.xz`
-# and `.tar.bz2` are rejected — no xz/bzip2 codec exists in the stdlib yet.
+# Network download is intentionally NOT here (TLS surface; 0.9.x). Supported
+# envelopes: plain `.tar`, `.tar.gz`, `.tar.xz`, and `.tar.bz2` — all via
+# stdlib `sankoch` (xz/bzip2 decode landed in sankoch 2.4.x / cyrius 6.2.16).
 #
 # Security model and the path-guard rationale are recorded in
 # docs/adr/0002-source-extraction-safety.md. The guards are fail-closed:
@@ -19,8 +20,8 @@
 enum SrcErr {
     SRC_ERR_OPEN = 1;        # cannot open / stat / short read
     SRC_ERR_TOO_LARGE = 2;   # archive or gunzip output exceeds the cap
-    SRC_ERR_BAD_MAGIC = 3;   # not gzip and not ustar (covers xz/bz2/zip)
-    SRC_ERR_GUNZIP = 4;      # sankoch gzip_decompress failed
+    SRC_ERR_BAD_MAGIC = 3;   # not a known envelope and not ustar
+    SRC_ERR_DECOMPRESS = 4;  # sankoch decompress failed (gzip/xz/bzip2)
     SRC_ERR_TRUNCATED = 5;   # header < 512 or data shorter than its size
     SRC_ERR_BAD_HEADER = 6;  # checksum / octal / magic check failed
     SRC_ERR_UNSUPPORTED = 7; # typeflag outside {regular, dir, symlink}
@@ -28,8 +29,16 @@ enum SrcErr {
     SRC_ERR_WRITE = 9;       # mkdir / write / symlink syscall failed
 }
 
-# 512 MiB ceiling on both the archive and the gunzip output.
+# 512 MiB ceiling on both the archive and the decompressed output.
 enum SrcLimit { SRC_MAX_BYTES = 536870912; }
+
+# Mirror of the sankoch return codes we branch on (decompress returns
+# `0 - ERR_*`). Mirrored locally rather than referenced so the grow-retry
+# logic can't be silently re-pointed by an ERR_* symbol collision.
+enum SankochRc {
+    SK_ERR_BUFFER_TOO_SMALL = 2;
+    SK_ERR_OUTPUT_LIMIT = 6;
+}
 
 # --- small byte/path helpers ------------------------------------------
 
@@ -311,21 +320,53 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
     var raw = alloc(sz);
     if (file_read_all(archive_path_cstr, raw, sz) != sz) { return 0 - SRC_ERR_OPEN; }
 
-    # 2. Sniff: gzip magic, else require ustar; gunzip if needed.
+    # 2. Sniff the compression envelope by magic, decompress to a plain tar.
+    #    gzip carries an exact ISIZE trailer; xz/bzip2 do not, so we
+    #    grow-retry the output buffer on a buffer-too-small return.
     var tar_buf = raw;
     var tar_len = sz;
-    if (sz >= 2) {
-        if ((load8(raw) & 0xFF) == 0x1F) {
-            if ((load8(raw + 1) & 0xFF) == 0x8B) {
-                var isize = _gzip_isize(raw, sz);
-                if (isize <= 0) { return 0 - SRC_ERR_GUNZIP; }
-                if (isize > SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
-                var out_cap = isize + 512;
-                var out = alloc(out_cap);
-                var dn = gzip_decompress(raw, sz, out, out_cap);
-                if (dn < 0) { return 0 - SRC_ERR_GUNZIP; }
+    var fmt = 0;
+    if (sz >= 6 && (load8(raw) & 0xFF) == 0xFD && (load8(raw + 1) & 0xFF) == 0x37 && (load8(raw + 2) & 0xFF) == 0x7A && (load8(raw + 3) & 0xFF) == 0x58 && (load8(raw + 4) & 0xFF) == 0x5A && (load8(raw + 5) & 0xFF) == 0x00) {
+        fmt = FORMAT_XZ;
+    } elif (sz >= 3 && (load8(raw) & 0xFF) == 0x42 && (load8(raw + 1) & 0xFF) == 0x5A && (load8(raw + 2) & 0xFF) == 0x68) {
+        fmt = FORMAT_BZIP2;
+    } elif (sz >= 2 && (load8(raw) & 0xFF) == 0x1F && (load8(raw + 1) & 0xFF) == 0x8B) {
+        fmt = FORMAT_GZIP;
+    }
+
+    if (fmt == FORMAT_GZIP) {
+        var isize = _gzip_isize(raw, sz);
+        if (isize <= 0) { return 0 - SRC_ERR_DECOMPRESS; }
+        if (isize > SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
+        var gcap = isize + 512;
+        var gout = alloc(gcap);
+        var gn = gzip_decompress(raw, sz, gout, gcap);
+        if (gn < 0) { return 0 - SRC_ERR_DECOMPRESS; }
+        tar_buf = gout;
+        tar_len = gn;
+    } elif (fmt != 0) {
+        # xz / bzip2: no reliable uncompressed size up front. Start from an
+        # 8x estimate (min 1 MiB) and double on buffer-too-small up to the cap.
+        var cap = sz * 8;
+        if (cap < 1048576) { cap = 1048576; }
+        if (cap > SRC_MAX_BYTES) { cap = SRC_MAX_BYTES; }
+        var done = 0;
+        while (done == 0) {
+            var out = alloc(cap);
+            var dn = decompress(fmt, raw, sz, out, cap);
+            if (dn >= 0) {
                 tar_buf = out;
                 tar_len = dn;
+                done = 1;
+            } else {
+                var e = 0 - dn;
+                if (e == SK_ERR_BUFFER_TOO_SMALL || e == SK_ERR_OUTPUT_LIMIT) {
+                    if (cap >= SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
+                    cap = cap * 2;
+                    if (cap > SRC_MAX_BYTES) { cap = SRC_MAX_BYTES; }
+                } else {
+                    return 0 - SRC_ERR_DECOMPRESS;
+                }
             }
         }
     }
