@@ -48,11 +48,20 @@
       `validate` / `list` / `order` / `build` (dry-run plan) / `version` /
       `help`; exit-code convention + testability split in
       [ADR 0003](../adr/0003-cli-surface.md). Unblocks integration tests + CI.
+- [x] Recipe source model — url / `github_release` / `local` kinds (0.9.0).
+      Parser + validator branch by kind; see
+      [ADR 0004](../adr/0004-recipe-source-model.md). takumi now parses 100%
+      of the zugot corpus (563/563); 539 fully validate (24 carry placeholder
+      empty `sha256` and are correctly rejected).
+- [x] Integration tests + CI (0.9.0) — `scripts/integration.sh` drives the
+      real CLI over vendored recipe fixtures (`tests/fixtures/recipes/`) +
+      optional zugot corpus sweep; `ci.yml` now runs fmt/lint/test/fuzz/bench/
+      integration gates.
 
 ## Backlog (0.9.x)
 
-- [ ] Source download (network fetch over HTTPS) — pairs with the existing
-      `verify_source_hash` integrity check
+- [ ] Source download (network fetch over HTTPS) — incl. resolving
+      `github_release` → asset URL; pairs with `verify_source_hash`
 - [ ] Patch application
 - [ ] Build execution (shell-out to configure/make/install)
 - [ ] Fake-root installation directory management
@@ -60,9 +69,6 @@
       tracked on ark's roadmap (ark `docs/development/roadmap.md`, "`.ark`
       package format" backlog); conformance ref is `src/ark_format.cyr`
       + [ADR 0001](../adr/0001-ark-binary-format.md)
-- [ ] Integration tests with real recipe files (CLI now exists to drive them)
-- [ ] CI pipeline (GitHub Actions) — scaffolded by `cyrius port`, now
-      drivable via the CLI (`takumi validate`/`list`/`order`)
 
 ## Future (post-0.9.x)
 

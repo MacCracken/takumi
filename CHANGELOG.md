@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.0] - 2026-06-17
+
+Opens the 0.9.x arc. The planned first step — integration tests + CI — was
+built and immediately surfaced a real gap: takumi's CLI parsed only 434 of the
+563 real zugot recipes because its source model was URL-only. So 0.9.0
+**expands the recipe source model** to the three shapes zugot actually uses,
+then ships the **integration harness + full CI** that validates the result.
+**All 563 recipes now parse** (539 fully validate; the 24 non-validating ones
+carry placeholder empty `sha256` and are correctly rejected). 733 tests
+(was 712).
+
+### Added
+
+- **Recipe source kinds** (`src/recipe.cyr`, `src/parse.cyr`, `src/validate.cyr`):
+  `SourceSpec` gains a `kind` tag —
+  - `url` + `sha256` (existing),
+  - `github_release = "owner/repo"` + `release_asset` + `sha256`,
+  - `local = true` (meta/alias packages, no upstream source).
+
+  New constructors `src_new_github`/`src_new_local` (legacy `src_new` unchanged
+  → URL kind); parser branches by shape; validator checks per kind (URL: https
+  + sha256; GitHub: `owner/repo` + asset + sha256; local: none). Resolving a
+  `github_release` to an asset URL and downloading remain deferred to the
+  network item; see [ADR 0004](docs/adr/0004-recipe-source-model.md).
+- **Integration harness** `scripts/integration.sh` — builds the binary and
+  drives the real CLI over vendored real-recipe fixtures
+  (`tests/fixtures/recipes/`: a url lib, a github recipe, a local meta-package)
+  asserting exit codes for `version`/`help`/`validate`/`list`/`order`/`build`,
+  plus an invalid fixture (exit 1). Optionally sweeps the full zugot corpus
+  when present (baseline-gated at 539/563), skipped in CI.
+- **CI gates** (`.github/workflows/ci.yml`): the build job now also runs
+  `fmt --check`, `lint`, the test suite, the fuzz harness, a benchmark smoke
+  run, and the integration harness (was build + docs only).
+- Tests: SourceSpec kind roundtrips, parser cases (github/local/missing-asset),
+  validator cases (local ok, github ok, bad `owner/repo`, missing asset).
+- [ADR 0004](docs/adr/0004-recipe-source-model.md) — the source model and the
+  parse-vs-fetch split.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.9.0.
+- Roadmap: integration tests + CI and the source-model expansion → Completed;
+  corpus baseline (563 parse / 539 validate) recorded.
+
 ## [0.8.5] - 2026-06-17
 
 `.tar.xz` and `.tar.bz2` source extraction — the codec gap from 0.8.3 is

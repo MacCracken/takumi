@@ -1,0 +1,53 @@
+# Patra — Structured storage and SQL for Cyrius
+# Embedded database engine: B-tree storage, write-ahead log, paged I/O,
+# row/JSONL formats, and a SQL query layer. "The sovereign database."
+# Consumed via `[deps.patra]` git deps in downstream cyrius.cyml (which
+# bundle dist/patra.cyr); this recipe ships the source tree for inspection.
+#
+# Name: Patra (Sanskrit: पत्र — leaf, page, record, vessel)
+# Lang: Cyrius (self-hosting; pulls the sakshi test lib as a build-time git dep)
+#
+# Status: Released — v1.11.2.
+
+[package]
+name = "patra"
+version = "1.11.2"
+description = "Patra — structured storage and SQL queries for Cyrius. The sovereign database."
+license = "GPL-3.0-only"
+groups = ["library", "database", "storage", "cyrius"]
+release = 1
+arch = "any"
+
+[source]
+github_release = "MacCracken/patra"
+release_asset = "patra-*-src.tar.gz"
+sha256 = "08bcfa8dd83f2e6a0d2f7ed38cf591c8f2e55f2a5a50cf6c60db250440760784"
+
+[depends]
+runtime = ["glibc"]
+build = ["cyrius"]
+
+[marketplace]
+category = "library"
+runtime = "native-binary"
+publisher = "AGNOS"
+tags = ["database", "sql", "storage", "btree", "wal", "jsonl", "cyrius"]
+min_agnos_version = "2026.3.22"
+
+[marketplace.sandbox]
+seccomp_mode = "basic"
+network_access = false
+
+[build]
+make = "cyrius build"
+check = "cyrius test"
+install = """
+mkdir -p $PKG/usr/lib/patra
+[ -f cyrius.cyml ] && cp cyrius.cyml $PKG/usr/lib/patra/
+[ -f VERSION ]     && cp VERSION     $PKG/usr/lib/patra/
+[ -d src ]         && cp -r src      $PKG/usr/lib/patra/
+[ -d dist ]        && cp -r dist     $PKG/usr/lib/patra/
+"""
+
+[security]
+hardening = ["pie", "fullrelro", "fortify", "stackprotector", "bindnow"]

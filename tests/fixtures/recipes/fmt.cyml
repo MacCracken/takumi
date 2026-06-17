@@ -1,0 +1,40 @@
+# {fmt} — Modern formatting library for C++
+#
+# BLFS
+
+[package]
+name = "fmt"
+version = "12.2.0"
+description = "{fmt} — C++ formatting library"
+license = "MIT"
+groups = ["desktops", "libs"]
+release = 1
+arch = "x86_64"
+
+[source]
+url = "https://github.com/fmtlib/fmt/releases/download/12.2.0/fmt-12.2.0.zip"
+sha256 = "a2f4a8d51178f954e4c339007f77edd76ba0cb2e36f87a48e5a5403d9be5878f"
+patches = []
+
+[depends]
+runtime = ["glibc"]
+build = ["gcc", "make", "cmake", "ninja", "unzip"]
+
+[build]
+pre_build = ""
+configure = """
+cmake -B build -G Ninja \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=ON \
+    -DFMT_TEST=OFF
+"""
+make = "cmake --build build --parallel"
+check = ""
+install = "DESTDIR=$PKG cmake --install build"
+post_install = ""
+
+[security]
+hardening = ["pie", "fullrelro", "fortify", "stackprotector", "bindnow"]
+cflags = "-O2 -pipe"
+ldflags = "-Wl,--as-needed"

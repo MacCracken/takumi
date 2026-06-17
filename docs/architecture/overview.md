@@ -73,6 +73,11 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 
 ### Source acquisition (`src/source.cyr`)
 
+A recipe's `[source]` is one of three kinds (`SourceSpec.kind`, see
+[ADR 0004](../adr/0004-recipe-source-model.md)): a plain `url` + `sha256`, a
+`github_release` + `release_asset` + `sha256`, or `local = true` (a meta/alias
+package with no upstream). The parser and validator branch by kind; resolving a
+GitHub asset to a URL and downloading are deferred to the network item.
 `verify_source_hash(path, expected_sha256)` confirms a staged tarball matches the
 recipe's `source.sha256`; `extract_archive(archive, dest)` unpacks `.tar`,
 `.tar.gz`, `.tar.xz`, and `.tar.bz2` (all via stdlib `sankoch` — gzip

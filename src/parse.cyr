@@ -192,11 +192,29 @@ fn _parse_package(sections) {
 fn _parse_source(sections) {
     var pairs = _find_section(sections, "source");
     if (pairs == 0) { return 0; }
+    var patches = _get_array_cstrs(pairs, "patches");
+
+    # 1. Local/meta package: `local = true`, no upstream source.
+    var local = _get_cstr(pairs, "local");
+    if (local != 0) {
+        if (streq(local, "true") == 1) { return src_new_local(patches); }
+    }
+
+    # 2. GitHub release asset: `github_release` + `release_asset` + sha256.
+    var repo = _get_cstr(pairs, "github_release");
+    if (repo != 0) {
+        var asset = _get_cstr(pairs, "release_asset");
+        if (asset == 0) { return 0; }
+        var gsha = _get_cstr(pairs, "sha256");
+        if (gsha == 0) { return 0; }
+        return src_new_github(repo, asset, gsha, patches);
+    }
+
+    # 3. Plain downloadable URL + sha256.
     var url = _get_cstr(pairs, "url");
     if (url == 0) { return 0; }
     var sha256 = _get_cstr(pairs, "sha256");
     if (sha256 == 0) { return 0; }
-    var patches = _get_array_cstrs(pairs, "patches");
     return src_new(url, sha256, patches);
 }
 

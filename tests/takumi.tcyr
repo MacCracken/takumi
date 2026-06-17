@@ -659,6 +659,18 @@ fn main() {
     var src2 = src_new("https://example.com/y.tar.gz", "abc", vec_new());
     assert_eq(vec_len(src_patches(src2)), 0, "empty patches");
 
+    test_group("SourceSpec: kind tags (url/github/local)");
+    assert_eq(src_kind(src), SRC_KIND_URL, "src_new -> URL kind");
+    var ghsrc = src_new_github("owner/repo", "asset-*.tar.gz", "abc", vec_new());
+    assert_eq(src_kind(ghsrc), SRC_KIND_GITHUB, "github kind");
+    assert(streq(src_gh_repo(ghsrc), "owner/repo"), "gh repo");
+    assert(streq(src_gh_asset(ghsrc), "asset-*.tar.gz"), "gh asset");
+    assert(streq(src_sha256(ghsrc), "abc"), "gh sha256");
+    var locsrc = src_new_local(vec_new());
+    assert_eq(src_kind(locsrc), SRC_KIND_LOCAL, "local kind");
+    assert_eq(src_url(locsrc), 0, "local has no url");
+    assert_eq(src_sha256(locsrc), 0, "local has no sha256");
+
     test_group("DependencySpec: roundtrip");
     var rt = vec_new(); vec_push(rt, "glibc"); vec_push(rt, "zlib");
     var bd = vec_new(); vec_push(bd, "perl"); vec_push(bd, "make");
@@ -892,6 +904,39 @@ fn main() {
     var cyml_nourl = str_cstr(str_builder_build(sb_nourl));
     assert_eq(recipe_parse_str(cyml_nourl, strlen(cyml_nourl)), 0, "missing url -> 0");
 
+    test_group("recipe_parse_str: github_release source");
+    var sb_gh = str_builder_new();
+    str_builder_add_cstr(sb_gh, "[package]\nname = \"gh\"\nversion = \"1.0\"\n");
+    str_builder_add_cstr(sb_gh, "description = \"y\"\nlicense = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_gh, "[source]\n");
+    str_builder_add_cstr(sb_gh, "github_release = \"MacCracken/patra\"\n");
+    str_builder_add_cstr(sb_gh, "release_asset = \"patra-*-src.tar.gz\"\n");
+    str_builder_add_cstr(sb_gh, "sha256 = \"abc\"\n");
+    var cyml_gh = str_cstr(str_builder_build(sb_gh));
+    var r_gh = recipe_parse_str(cyml_gh, strlen(cyml_gh));
+    assert(r_gh != 0, "github recipe parses");
+    assert_eq(src_kind(recipe_source(r_gh)), SRC_KIND_GITHUB, "kind GITHUB");
+    assert(streq(src_gh_repo(recipe_source(r_gh)), "MacCracken/patra"), "gh repo parsed");
+    assert(streq(src_gh_asset(recipe_source(r_gh)), "patra-*-src.tar.gz"), "gh asset parsed");
+
+    test_group("recipe_parse_str: github_release missing release_asset -> 0");
+    var sb_ghn = str_builder_new();
+    str_builder_add_cstr(sb_ghn, "[package]\nname = \"gh\"\nversion = \"1.0\"\n");
+    str_builder_add_cstr(sb_ghn, "description = \"y\"\nlicense = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_ghn, "[source]\ngithub_release = \"o/r\"\nsha256 = \"abc\"\n");
+    var cyml_ghn = str_cstr(str_builder_build(sb_ghn));
+    assert_eq(recipe_parse_str(cyml_ghn, strlen(cyml_ghn)), 0, "github missing asset -> 0");
+
+    test_group("recipe_parse_str: local meta-package source");
+    var sb_loc = str_builder_new();
+    str_builder_add_cstr(sb_loc, "[package]\nname = \"meta\"\nversion = \"1.0\"\n");
+    str_builder_add_cstr(sb_loc, "description = \"alias\"\nlicense = \"MIT\"\n\n");
+    str_builder_add_cstr(sb_loc, "[source]\nlocal = true\n");
+    var cyml_loc = str_cstr(str_builder_build(sb_loc));
+    var r_loc = recipe_parse_str(cyml_loc, strlen(cyml_loc));
+    assert(r_loc != 0, "local recipe parses");
+    assert_eq(src_kind(recipe_source(r_loc)), SRC_KIND_LOCAL, "kind LOCAL");
+
     test_group("recipe_parse_str: unknown hardening flag -> 0");
     var sb_badhf = str_builder_new();
     str_builder_add_cstr(sb_badhf, "[package]\n");
@@ -1009,6 +1054,36 @@ fn main() {
         _valid_dep(), _valid_bld(), _valid_sec()));
     assert_eq(val_ok(v_ftp), 0, "rejected");
     assert_eq(_has_error(v_ftp, "source URL uses an unsupported scheme; only https:// and http:// are allowed"), 1, "specific message");
+
+    test_group("validate_recipe: local source -> ok (no source checks)");
+    var v_local = validate_recipe(recipe_new(
+        _valid_pkg(), src_new_local(vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_local), 1, "local meta-package valid (no url/sha required)");
+
+    test_group("validate_recipe: github source valid -> ok");
+    var v_gh = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new_github("MacCracken/patra", "patra-*-src.tar.gz",
+                       "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_gh), 1, "valid github source");
+
+    test_group("validate_recipe: github repo not owner/repo -> error");
+    var v_ghbad = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new_github("noslug", "asset.tar.gz", "abc", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_ghbad), 0, "rejected");
+    assert_eq(_has_error(v_ghbad, "github_release must be in \"owner/repo\" form"), 1, "specific message");
+
+    test_group("validate_recipe: github missing release_asset -> error");
+    var v_ghna = validate_recipe(recipe_new(
+        _valid_pkg(),
+        src_new_github("o/r", "", "e1f5c1c2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0", vec_new()),
+        _valid_dep(), _valid_bld(), _valid_sec()));
+    assert_eq(val_ok(v_ghna), 0, "rejected");
+    assert_eq(_has_error(v_ghna, "github_release source has empty release_asset"), 1, "specific message");
 
     test_group("validate_recipe: empty sha256 -> error");
     var v_nosha = validate_recipe(recipe_new(
@@ -1407,7 +1482,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.8.5"), "builder stamp is takumi/0.8.5");
+    assert(streq(man_builder(cam_m), "takumi/0.9.0"), "builder stamp is takumi/0.9.0");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");

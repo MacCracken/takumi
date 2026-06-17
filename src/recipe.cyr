@@ -55,15 +55,30 @@ fn pkg_release(p) { return load64(p + PKG_RELEASE); }
 fn pkg_arch(p) { return load64(p + PKG_ARCH); }
 
 # ---------------------------------------------------------------------------
-# SourceSpec — recipe [source] section.
-# url + sha256 are required cstrings. patches is a vec of cstring.
+# SourceSpec — recipe [source] section. Three shapes seen in zugot:
+#   URL    : url + sha256                (a downloadable tarball)
+#   GITHUB : github_release + release_asset + sha256 (asset URL resolved at
+#            fetch time, 0.9.x; only the slug/pattern are modeled here)
+#   LOCAL  : local = true                (meta/alias package, no upstream)
+# `kind` selects which fields are meaningful. `patches` is always a vec of
+# cstring. A zero-init alloc defaults to SRC_KIND_URL, so the legacy
+# `src_new(url, sha256, patches)` constructor keeps working unchanged.
 # ---------------------------------------------------------------------------
+
+enum SrcKind {
+    SRC_KIND_URL = 0;
+    SRC_KIND_GITHUB = 1;
+    SRC_KIND_LOCAL = 2;
+}
 
 enum SrcOff {
     SRC_URL = 0;
     SRC_SHA256 = 8;
     SRC_PATCHES = 16;
-    SRC_SIZE = 24;
+    SRC_KIND = 24;
+    SRC_GH_REPO = 32;
+    SRC_GH_ASSET = 40;
+    SRC_SIZE = 48;
 }
 
 fn src_new(url, sha256, patches) {
@@ -71,12 +86,36 @@ fn src_new(url, sha256, patches) {
     store64(s + SRC_URL, url);
     store64(s + SRC_SHA256, sha256);
     store64(s + SRC_PATCHES, patches);
+    store64(s + SRC_KIND, SRC_KIND_URL);
+    return s;
+}
+
+# GitHub release-asset source: `github_release = "owner/repo"`,
+# `release_asset = "pattern"`, plus sha256 of the resolved asset.
+fn src_new_github(repo, asset, sha256, patches) {
+    var s = alloc(SRC_SIZE);
+    store64(s + SRC_SHA256, sha256);
+    store64(s + SRC_PATCHES, patches);
+    store64(s + SRC_KIND, SRC_KIND_GITHUB);
+    store64(s + SRC_GH_REPO, repo);
+    store64(s + SRC_GH_ASSET, asset);
+    return s;
+}
+
+# Local/meta package: no upstream source (alias for another package's build).
+fn src_new_local(patches) {
+    var s = alloc(SRC_SIZE);
+    store64(s + SRC_PATCHES, patches);
+    store64(s + SRC_KIND, SRC_KIND_LOCAL);
     return s;
 }
 
 fn src_url(s) { return load64(s + SRC_URL); }
 fn src_sha256(s) { return load64(s + SRC_SHA256); }
 fn src_patches(s) { return load64(s + SRC_PATCHES); }
+fn src_kind(s) { return load64(s + SRC_KIND); }
+fn src_gh_repo(s) { return load64(s + SRC_GH_REPO); }
+fn src_gh_asset(s) { return load64(s + SRC_GH_ASSET); }
 
 # ---------------------------------------------------------------------------
 # DependencySpec — recipe [depends] section.

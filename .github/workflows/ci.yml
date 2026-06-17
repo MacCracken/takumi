@@ -40,6 +40,24 @@ jobs:
           mkdir -p build
           cyrius build src/main.cyr build/${{ github.event.repository.name }}
 
+      - name: Format check
+        run: cyrius fmt src/*.cyr --check
+
+      - name: Lint
+        run: cyrius lint src/*.cyr
+
+      - name: Tests
+        run: cyrius test tests/takumi.tcyr
+
+      - name: Fuzz harness
+        run: cyrius test tests/takumi.fcyr
+
+      - name: Benchmarks (smoke)
+        run: cyrius bench tests/takumi.bcyr
+
+      - name: Integration (CLI over real recipe fixtures)
+        run: bash scripts/integration.sh
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

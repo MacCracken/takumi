@@ -1,6 +1,6 @@
 [package]
 name = "takumi"
-version = "0.8.5"
+version = "0.9.0"
 description = "takumi — Cyrius port (from 2034 lines of Rust)"
 license = "GPL-3.0-only"
 language = "cyrius"

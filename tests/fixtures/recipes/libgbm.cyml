@@ -1,0 +1,31 @@
+# libgbm — alias meta-package for mesa's libgbm
+# Mesa ships libgbm (Generic Buffer Manager) as part of its build.
+
+[package]
+name = "libgbm"
+version = "26.0.5"
+description = "libgbm — alias meta-package for mesa's libgbm"
+license = "MIT"
+groups = ["desktops", "libs", "meta"]
+release = 1
+arch = "any"
+
+[source]
+local = true
+
+[depends]
+runtime = ["mesa"]
+build = []
+
+[build]
+pre_build = ""
+configure = ""
+make = ""
+check = ""
+install = ""
+post_install = ""
+
+[security]
+hardening = []
+cflags = ""
+ldflags = ""

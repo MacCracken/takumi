@@ -116,6 +116,30 @@ fn sha256_is_lowercase_hex64(s) {
     return 1;
 }
 
+# True if `s` contains a '/' (used to sanity-check "owner/repo" slugs).
+fn _cstr_has_slash(s) {
+    var n = strlen(s);
+    var i = 0;
+    while (i < n) {
+        if (load8(s + i) == 47) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Shared source-sha256 check (URL + GitHub kinds): empty -> error,
+# malformed hex -> warning (a short placeholder is common while drafting).
+fn _validate_source_sha(sha, errors, warnings) {
+    if (sha == 0) {
+        vec_push(errors, "recipe has empty source sha256");
+    } elif (strlen(sha) == 0) {
+        vec_push(errors, "recipe has empty source sha256");
+    } elif (sha256_is_lowercase_hex64(sha) == 0) {
+        vec_push(warnings, "source sha256 is not a valid lowercase 64-character hex digest");
+    }
+    return 0;
+}
+
 # ---------------------------------------------------------------------------
 # Version heuristic — warns if the version string has no '.' separator
 # (e.g. "7" instead of "7.0"). Not strict semver, matches the Rust impl.
@@ -226,22 +250,39 @@ fn validate_recipe(recipe) {
         vec_push(warnings, "release number is 0, should start at 1");
     }
 
-    # Source URL — fatal if empty or wrong scheme.
-    var url = src_url(src);
-    if (strlen(url) == 0) {
-        vec_push(errors, "recipe has empty source URL");
-    } elif (url_has_valid_scheme(url) == 0) {
-        vec_push(errors, "source URL uses an unsupported scheme; only https:// and http:// are allowed");
-    }
-
-    # Source sha256 — fatal if empty; warn if shape is wrong. The Rust
-    # impl warned (not errored) on malformed hex because a too-short
-    # placeholder is common during recipe drafting.
-    var sha = src_sha256(src);
-    if (strlen(sha) == 0) {
-        vec_push(errors, "recipe has empty source sha256");
-    } elif (sha256_is_lowercase_hex64(sha) == 0) {
-        vec_push(warnings, "source sha256 is not a valid lowercase 64-character hex digest");
+    # Source — checks depend on the source kind (set by the parser).
+    var skind = src_kind(src);
+    if (skind == SRC_KIND_LOCAL) {
+        # Meta/alias package: no upstream source to validate.
+    } elif (skind == SRC_KIND_GITHUB) {
+        # github_release must be "owner/repo"; release_asset non-empty;
+        # sha256 (of the resolved asset) shape-checked like the URL kind.
+        var repo = src_gh_repo(src);
+        if (repo == 0) {
+            vec_push(errors, "github_release source has empty repo");
+        } elif (strlen(repo) == 0) {
+            vec_push(errors, "github_release source has empty repo");
+        } elif (_cstr_has_slash(repo) == 0) {
+            vec_push(errors, "github_release must be in \"owner/repo\" form");
+        }
+        var gasset = src_gh_asset(src);
+        if (gasset == 0) {
+            vec_push(errors, "github_release source has empty release_asset");
+        } elif (strlen(gasset) == 0) {
+            vec_push(errors, "github_release source has empty release_asset");
+        }
+        _validate_source_sha(src_sha256(src), errors, warnings);
+    } else {
+        # SRC_KIND_URL — fatal if empty or wrong scheme.
+        var url = src_url(src);
+        if (url == 0) {
+            vec_push(errors, "recipe has empty source URL");
+        } elif (strlen(url) == 0) {
+            vec_push(errors, "recipe has empty source URL");
+        } elif (url_has_valid_scheme(url) == 0) {
+            vec_push(errors, "source URL uses an unsupported scheme; only https:// and http:// are allowed");
+        }
+        _validate_source_sha(src_sha256(src), errors, warnings);
     }
 
     # Build steps — advisory when the recipe has no runnable phase.
