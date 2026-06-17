@@ -12,12 +12,14 @@
 #
 # `build <dir>` prints the plan and exits 2 (a dry run); `build <dir> --execute`
 # runs the full pipeline (fetch → verify → extract → patch → build → package)
-# and exits 0/1. See docs/adr/0003-cli-surface.md and the
-# docs/guides/building-packages.md guide.
+# and exits 0/1. `--keep-going` (-k) attempts every package, skips a failed
+# package's dependents, and prints a built/failed/skipped summary (for driving a
+# whole base-system set). See docs/adr/0003-cli-surface.md and the
+# docs/guides/building-packages.md + base-system-build.md guides.
 
 # Single source of the CLI version string. Keep in sync with VERSION,
 # cyrius.cyml, and the src/package.cyr builder stamp.
-fn takumi_version() { return "0.10.2"; }
+fn takumi_version() { return "0.11.0"; }
 
 # --- small output helpers ---------------------------------------------
 
@@ -48,7 +50,8 @@ fn _print_usage() {
     println("  validate <recipe.cyml>...   parse and validate recipes");
     println("  list <dir>                  list recipes in a directory");
     println("  order <dir>                 print topological build order");
-    println("  build <dir> [--execute]     plan a build, or run it (-x) into a fake-root");
+    println("  build <dir> [-x] [-k]       plan a build, or run it (--execute) into a fake-root");
+    println("                              (--keep-going: build all, skip a failed pkg's deps, then summarize)");
     println("  version                     print version");
     println("  help                        show this help");
     return 0;
@@ -204,15 +207,89 @@ fn _ark_out_path(out_dir, name) {
     return str_cstr(str_builder_build(sb));
 }
 
-# Execute the build for each recipe in topo order (called when --execute is
-# set, after validation + ordering succeeded). Fail-closed: a failed build
-# stops the run. Recipes whose source isn't staged (download pending) are
-# skipped, not failed.
-fn _cli_build_execute(map, order, patch_dir) {
-    var out_dir = _cli_build_out();
-    _mkdir_p(out_dir);
-    # Probe once which sandbox layers this host supports, and report the mode.
-    # Build steps are bounded by the sandbox timeout regardless (src/sandbox.cyr).
+# Build one recipe end to end: stage -> (fetch -> verify -> extract for
+# non-local) -> patch -> build (sandboxed) -> package. Prints its own
+# per-package error (incl. the failing phase) on failure. Returns 0 on success,
+# 1 on any failure.
+fn _cli_build_one(r, name, patch_dir, out_dir, isolate, confine) {
+    var ctx = stage_build_dirs(_cli_build_root(), out_dir, name, 0, r);
+    if (ctx == 0) {
+        _cli_say2("build: staging failed: ", name);
+        return 1;
+    }
+    # Non-local recipes: fetch the source, verify its pinned hash (hard gate —
+    # never extract an unverified artifact), then extract it.
+    if (src_kind(recipe_source(r)) != SRC_KIND_LOCAL) {
+        var src = recipe_source(r);
+        var dl = _join2(bcx_build_dir(ctx), "download");
+        if (fetch_source(src, dl) != 0) {
+            _cli_say2("build: source fetch failed: ", name);
+            return 1;
+        }
+        if (verify_source_hash(dl, src_sha256(src)) != 1) {
+            _cli_say2("build: source hash mismatch: ", name);
+            return 1;
+        }
+        if (extract_archive(dl, bcx_source_dir(ctx)) != 0) {
+            _cli_say2("build: source extract failed: ", name);
+            return 1;
+        }
+    }
+    # Apply recipe patches to the extracted source root (after extract, before
+    # build). Patch files resolve under the recipes dir.
+    if (apply_patches(r, _build_cwd(ctx), patch_dir) != 0) {
+        _cli_say2("build: patch failed: ", name);
+        return 1;
+    }
+    var entry = exec_build(ctx, clock_epoch_secs(), isolate, confine);
+    if (ble_status(entry) == BS_FAILED) {
+        _cli_say2("build: FAILED: ", name);
+        _cli_say2("  ", ble_fail_msg(entry));
+        return 1;
+    }
+    var entries = create_file_list(bcx_package_dir(ctx));
+    var man = create_ark_manifest(r, entries, "x86_64", resolve_build_epoch(clock_epoch_secs()));
+    var apath = _ark_out_path(out_dir, name);
+    if (ark_write(man, entries, bcx_package_dir(ctx), apath, 0) != 0) {
+        _cli_say2("build: packaging failed: ", name);
+        return 1;
+    }
+    _cli_say2("build: ok -> ", apath);
+    return 0;
+}
+
+# True if any runtime dependency of `r` is in the `tainted` name vec (a package
+# that already failed or was skipped). Used to skip a failed package's
+# dependents in --keep-going mode, in topo order, so the report shows root
+# causes rather than a cascade.
+fn _cli_dep_tainted(r, tainted) {
+    var deps = dep_runtime(recipe_depends(r));
+    var j = 0;
+    while (j < vec_len(deps)) {
+        if (cstr_vec_contains(tainted, vec_get(deps, j)) == 1) { return 1; }
+        j = j + 1;
+    }
+    return 0;
+}
+
+# Print a space-separated, indented name list under `label` (if non-empty).
+fn _cli_name_list(label, names) {
+    if (vec_len(names) == 0) { return 0; }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, label);
+    var j = 0;
+    while (j < vec_len(names)) {
+        str_builder_add_cstr(sb, vec_get(names, j));
+        if (j + 1 < vec_len(names)) { str_builder_add_cstr(sb, " "); }
+        j = j + 1;
+    }
+    _putln(str_cstr(str_builder_build(sb)));
+    return 0;
+}
+
+# Probe + report which sandbox layers this host supports (steps are timeout-
+# bounded regardless; see src/sandbox.cyr). Returns isolate<<1 | confine.
+fn _cli_sandbox_report() {
     var isolate = sandbox_net_available();
     var confine = sandbox_fs_available();
     if (isolate == 1) {
@@ -225,59 +302,72 @@ fn _cli_build_execute(map, order, patch_dir) {
     } else {
         println("build: sandbox filesystem confinement: unavailable (no Landlock); steps still time-bounded");
     }
+    return isolate * 2 + confine;
+}
+
+# Execute the build for each recipe in topo order (called when --execute is set,
+# after validation + ordering succeeded). Default is fail-closed: the first
+# failure stops the run (exit 1). With `keep_going` = 1, every package is
+# attempted, a failed package's dependents are skipped (not cascade-failed), and
+# a built/failed/skipped summary is printed; exit 1 if anything failed.
+fn _cli_build_execute(map, order, patch_dir, keep_going) {
+    var out_dir = _cli_build_out();
+    _mkdir_p(out_dir);
+    var modes = _cli_sandbox_report();
+    var isolate = modes / 2;
+    var confine = modes & 1;
+
+    var total = vec_len(order);
+    var built = 0;
+    var failed = 0;
+    var skipped = 0;
+    var tainted = vec_new();          # names that failed or were skipped
+    var failed_names = vec_new();
+    var skipped_names = vec_new();
+
     var i = 0;
-    while (i < vec_len(order)) {
+    while (i < total) {
         var name = vec_get(order, i);
         var r = map_get(map, name);
-        var ctx = stage_build_dirs(_cli_build_root(), out_dir, name, 0, r);
-        if (ctx == 0) {
-            _cli_say2("build: staging failed: ", name);
-            return 1;
-        }
-        # Non-local recipes: fetch the source, verify its pinned hash (hard
-        # gate — never extract an unverified artifact), then extract it.
-        if (src_kind(recipe_source(r)) != SRC_KIND_LOCAL) {
-            var src = recipe_source(r);
-            var dl = _join2(bcx_build_dir(ctx), "download");
-            if (fetch_source(src, dl) != 0) {
-                _cli_say2("build: source fetch failed: ", name);
-                return 1;
-            }
-            if (verify_source_hash(dl, src_sha256(src)) != 1) {
-                _cli_say2("build: source hash mismatch: ", name);
-                return 1;
-            }
-            if (extract_archive(dl, bcx_source_dir(ctx)) != 0) {
-                _cli_say2("build: source extract failed: ", name);
-                return 1;
+        if (keep_going == 1 && _cli_dep_tainted(r, tainted) == 1) {
+            _cli_say2("build: skipped (dependency failed): ", name);
+            skipped = skipped + 1;
+            vec_push(skipped_names, name);
+            vec_push(tainted, name);
+        } else {
+            if (_cli_build_one(r, name, patch_dir, out_dir, isolate, confine) == 0) {
+                built = built + 1;
+            } else {
+                if (keep_going == 0) { return 1; }
+                failed = failed + 1;
+                vec_push(failed_names, name);
+                vec_push(tainted, name);
             }
         }
-        # Apply recipe patches to the extracted source root (after extract,
-        # before build). Patch files resolve under the recipes dir.
-        if (apply_patches(r, _build_cwd(ctx), patch_dir) != 0) {
-            _cli_say2("build: patch failed: ", name);
-            return 1;
-        }
-        var entry = exec_build(ctx, clock_epoch_secs(), isolate, confine);
-        if (ble_status(entry) == BS_FAILED) {
-            _cli_say2("build: FAILED: ", name);
-            _cli_say2("  ", ble_fail_msg(entry));
-            return 1;
-        }
-        var entries = create_file_list(bcx_package_dir(ctx));
-        var man = create_ark_manifest(r, entries, "x86_64", resolve_build_epoch(clock_epoch_secs()));
-        var apath = _ark_out_path(out_dir, name);
-        if (ark_write(man, entries, bcx_package_dir(ctx), apath, 0) != 0) {
-            _cli_say2("build: packaging failed: ", name);
-            return 1;
-        }
-        _cli_say2("build: ok -> ", apath);
         i = i + 1;
     }
+
+    # Summary (the per-package errors above name the failing phase).
+    if (keep_going == 1) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "build summary: ");
+        str_builder_add_int(sb, built);
+        str_builder_add_cstr(sb, " built, ");
+        str_builder_add_int(sb, failed);
+        str_builder_add_cstr(sb, " failed, ");
+        str_builder_add_int(sb, skipped);
+        str_builder_add_cstr(sb, " skipped (of ");
+        str_builder_add_int(sb, total);
+        str_builder_add_cstr(sb, ")");
+        _putln(str_cstr(str_builder_build(sb)));
+        _cli_name_list("  failed:  ", failed_names);
+        _cli_name_list("  skipped: ", skipped_names);
+    }
+    if (failed > 0) { return 1; }
     return 0;
 }
 
-fn cmd_build(dir, execute) {
+fn cmd_build(dir, execute, keep_going) {
     if (is_dir(str_from(dir)) == 0) {
         _cli_say2("build: not a directory: ", dir);
         return 1;
@@ -311,7 +401,7 @@ fn cmd_build(dir, execute) {
         i = i + 1;
     }
     if (execute == 1) {
-        return _cli_build_execute(map, order, dir);
+        return _cli_build_execute(map, order, dir, keep_going);
     }
     println("build execution: re-run with --execute (runs unprivileged into a fake-root)");
     return 2;
@@ -347,15 +437,16 @@ fn cli_dispatch(args) {
     }
     if (streq(cmd, "build") == 1) {
         var ex = 0;
+        var kg = 0;
         var bdir = 0;
         var k = 1;
         while (k < n) {
             var a = vec_get(args, k);
-            if (streq(a, "--execute") == 1) {
+            if (streq(a, "--execute") == 1 || streq(a, "-x") == 1) {
                 ex = 1;
             } else {
-                if (streq(a, "-x") == 1) {
-                    ex = 1;
+                if (streq(a, "--keep-going") == 1 || streq(a, "-k") == 1) {
+                    kg = 1;
                 } else {
                     if (bdir == 0) { bdir = a; }
                 }
@@ -363,7 +454,7 @@ fn cli_dispatch(args) {
             k = k + 1;
         }
         if (bdir == 0) { println("build: missing <dir>"); return 2; }
-        return cmd_build(bdir, ex);
+        return cmd_build(bdir, ex, kg);
     }
     _cli_say2("unknown command: ", cmd);
     _print_usage();

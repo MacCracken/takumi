@@ -68,3 +68,13 @@ builder stamp as a sync point (all four must match).
   now and makes the eventual execution a drop-in.
 - **`build` exits `0`** — rejected; it hasn't built anything, so a non-zero
   code is the honest signal for scripts.
+
+## Amendment (0.11.0) — `build --keep-going`
+
+`build --execute` is fail-closed (the first package failure stops the run, exit
+1) — right for CI gates. `--keep-going` (`-k`) was added for driving a whole
+base-system set: it attempts every package, **skips a failed package's
+dependents** (checked via runtime deps in topo order, so the report shows root
+causes not a cascade), and prints a `built / failed / skipped` summary. Exit is
+still `1` if anything failed. The `streq` dispatch absorbed the flag without a
+parser change. See the [base-system runbook](../guides/base-system-build.md).

@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.0] - 2026-06-17
+
+Base-system build driver + operator runbook — `build --execute --keep-going`
+drives a whole recipe set, surviving per-package failures with a summary. Closes
+v1.0 criterion 1. 847 tests (was 845).
+
+### Added
+
+- **`build --execute --keep-going` (`-k`)** (`src/cli.cyr`). Attempts every
+  package in topo order instead of stopping at the first failure; a failed
+  package's **dependents are skipped** (not cascade-failed — checked via runtime
+  deps in topo order); prints a `build summary: N built, M failed, K skipped (of
+  T)` with the failed/skipped name lists. Per-package lines name the failing
+  phase. Exit `1` if anything failed, `0` only if all built. Default (without
+  `-k`) is unchanged: fail-closed, stop at the first failure.
+  - Refactor: per-package build extracted to `_cli_build_one`; sandbox-mode probe
+    to `_cli_sandbox_report`. No behavior change to the default path.
+- **Operator runbook** `docs/guides/base-system-build.md` — prerequisites
+  (toolchain, build deps, userns/Landlock, disk), the one command, reading the
+  report, the sandbox, reproducibility tips.
+- Tests (+2): `--keep-going` over a local dir succeeds (exit 0) and dispatches
+  via `-k`. Integration: a three-recipe set (ok / failing / dependent) asserts
+  exit 1, the dependent is skipped, and the summary is printed.
+
+### Changed
+
+- `cmd_build` / `_cli_build_execute` take a `keep_going` flag; usage text +
+  header comment document `-x`/`-k`. Builder stamp + `takumi_version()` → 0.11.0.
+
+### v1 status
+
+- **Criterion 1 (build the full base system) → met**: real builds are
+  demonstrated end to end (GNU hello, 0.10.1), and the `--keep-going` driver +
+  runbook make driving the full zugot set runnable + observable. A complete
+  309-package compile remains an operator/CI activity (full toolchain host).
+- Next in the 0.11.x arc: the pre-v1 security audit (criterion 7).
+
 ## [0.10.2] - 2026-06-17
 
 GNU long-name tar headers — clears the last extraction backlog item, completing

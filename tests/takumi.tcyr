@@ -1676,7 +1676,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.10.2"), "builder stamp is takumi/0.10.2");
+    assert(streq(man_builder(cam_m), "takumi/0.11.0"), "builder stamp is takumi/0.11.0");
 
     test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
     # strict decimal parse: value, or -1 on empty/null/non-digit.
@@ -2616,7 +2616,7 @@ fn main() {
     assert_eq(cmd_list(cli_dir), 0, "list dir -> 0");
     assert_eq(cmd_list("/tmp/takumi-cli-does-not-exist"), 1, "list missing dir -> 1");
     assert_eq(cmd_order(cli_dir), 0, "order dir -> 0");
-    assert_eq(cmd_build(cli_dir, 0), 2, "build dir (dry-run) -> 2");
+    assert_eq(cmd_build(cli_dir, 0, 0), 2, "build dir (dry-run) -> 2");
     # via dispatch too
     assert_eq(cli_dispatch(pkg_vec("order", cli_dir, 0, 0, 0, 0)), 0, "dispatch order -> 0");
     assert_eq(cli_dispatch(pkg_vec("build", cli_dir, 0, 0, 0, 0)), 2, "dispatch build -> 2");
@@ -2636,7 +2636,13 @@ fn main() {
     var rmlb = vec_new();
     vec_push(rmlb, "/bin/rm"); vec_push(rmlb, "-rf"); vec_push(rmlb, "/tmp/takumi-build");
     exec_vec(rmlb);
-    assert_eq(cmd_build(loc_dir, 1), 0, "build --execute (local) -> 0");
+    assert_eq(cmd_build(loc_dir, 1, 0), 0, "build --execute (local) -> 0");
+    exec_vec(rmlb);
+    # --keep-going over the same local dir: still succeeds (nothing fails), exit 0.
+    assert_eq(cmd_build(loc_dir, 1, 1), 0, "build --execute --keep-going (local) -> 0");
+    exec_vec(rmlb);
+    # via dispatch with the -k flag.
+    assert_eq(cli_dispatch(pkg_vec("build", loc_dir, "--execute", "--keep-going", 0, 0)), 0, "dispatch build -x -k -> 0");
     exec_vec(rmlb);
     sys_unlink("/tmp/takumi-cli-local/meta.cyml");
     sys_rmdir(loc_dir);

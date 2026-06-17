@@ -346,6 +346,27 @@ else
 fi
 rm -rf "$RREC" /tmp/takumi-build /tmp/takumi-it-repro-a.ark /tmp/takumi-it-repro-b.ark
 
+# Base-system build driver (0.11.0): --keep-going attempts every package,
+# continues past a failure, skips a failed package's dependents, and prints a
+# summary; exit 1 if anything failed. Three local recipes (no network): one
+# builds, one fails, one depends on the failing one (-> skipped).
+echo "== build --execute --keep-going (continue + summary) =="
+KGREC=/tmp/takumi-it-kgrec
+rm -rf "$KGREC" /tmp/takumi-build; mkdir -p "$KGREC"
+{ echo '[package]'; echo 'name = "kgok"'; echo 'version = "1.0"'; echo 'description = "ok"'; echo 'license = "MIT"'; echo; echo '[source]'; echo 'local = true'; echo; echo '[build]'; echo 'install = "true"'; } > "$KGREC/ok.cyml"
+{ echo '[package]'; echo 'name = "kgfail"'; echo 'version = "1.0"'; echo 'description = "fail"'; echo 'license = "MIT"'; echo; echo '[source]'; echo 'local = true'; echo; echo '[build]'; echo 'install = "false"'; } > "$KGREC/fail.cyml"
+{ echo '[package]'; echo 'name = "kgdep"'; echo 'version = "1.0"'; echo 'description = "dep"'; echo 'license = "MIT"'; echo; echo '[depends]'; echo 'runtime = ["kgfail"]'; echo; echo '[source]'; echo 'local = true'; echo; echo '[build]'; echo 'install = "true"'; } > "$KGREC/dep.cyml"
+KGOUT=$("$BIN" build "$KGREC" --execute --keep-going 2>&1); kgrc=$?
+check "build --keep-going exits 1 when a package fails" 1 $kgrc
+if echo "$KGOUT" | grep -q "1 built, 1 failed, 1 skipped" && echo "$KGOUT" | grep -q "skipped (dependency failed): kgdep"; then
+  echo "  ok   keep-going: ok built, failure reported, dependent skipped, summary printed"
+else
+  echo "  FAIL keep-going summary/skip not as expected"
+  fails=$((fails + 1))
+  echo "$KGOUT" | tail -n 8 | sed 's/^/    /'
+fi
+rm -rf "$KGREC" /tmp/takumi-build
+
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"
 if [ -d "$ZUGOT" ]; then
