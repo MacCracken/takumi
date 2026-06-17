@@ -53,16 +53,17 @@ makes the script's exit code equal the step's.
   its fixed, single-quoted `cd`/`export` prelude. Trust model: curated zugot
   recipes + sha-pinned, verified sources (the standard from-source posture of
   Gentoo ebuilds / Arch PKGBUILDs / BSD ports).
-- **Documented v1 limitations (deferred to a future sandbox milestone):**
-  - No filesystem/mount sandbox — a buggy/malicious `install` can write outside
-    DESTDIR within the build user's reach. Operator mitigation: a dedicated,
-    unprivileged, throwaway build user.
-  - No network namespace — a step may fetch at build time, defeating source
-    pinning/reproducibility.
-  - No rlimit/timeout — a runaway step blocks indefinitely.
-  These need `unshare`/`clone` and rlimit syscalls not yet wrapped in the
-  stdlib; the sandbox is a post-v1 milestone. `umask 022` is the one hardening
-  taken now.
+- **Sandbox limitations** — the sandbox is being built in bites (see
+  [ADR 0011](0011-build-sandbox.md)):
+  - **Network namespace + timeout — DONE (0.9.8).** Each step now runs in a
+    fresh, hermetic network namespace (unprivileged user-namespace) and under a
+    wall-clock timeout; a runaway step is `SIGKILL`ed.
+  - No filesystem/mount sandbox yet — a buggy/malicious `install` can write
+    outside DESTDIR within the build user's reach. Operator mitigation: a
+    dedicated, unprivileged, throwaway build user. Landlock confinement is the
+    next sandbox bite.
+  - No seccomp syscall filtering yet.
+  `umask 022` was the one hardening taken at 0.9.1.
 - **Fail-closed** stops on the first failing step and returns before packaging,
   mirroring the extractor (ADR 0002).
 

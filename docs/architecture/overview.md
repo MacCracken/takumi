@@ -111,8 +111,13 @@ advancing `BuildStatus`, fail-closed, returning a `BuildLogEntry`. The whole
 build runs **unprivileged** and writes only into the DESTDIR fake-root — no
 root, no setuid helper (the privilege boundary is downstream in ark/shakti).
 `stage_build_dirs` lays out `build_root/<pkg>/{src,build,pkg}`. CLI: `build
---execute`. Security model + deferred sandbox in
-[ADR 0005](../adr/0005-build-execution.md). Before the build steps,
+--execute`. Security model in [ADR 0005](../adr/0005-build-execution.md). Each
+step runs through the **sandbox** (`src/sandbox.cyr`, `exec_vec_sandboxed`): a
+fresh **network namespace** (unprivileged user-namespace + identity uid/gid map;
+hermetic — no build-time network) and a **wall-clock timeout** (process-group
+`SIGKILL` on overrun). Isolation is best-effort + probed/reported; the timeout
+always applies. Filesystem confinement (Landlock) + seccomp are later bites. See
+[ADR 0011](../adr/0011-build-sandbox.md). Before the build steps,
 `apply_patches(recipe, cwd, patch_dir)` applies the recipe's `source.patches`
 (in order) to the extracted source root by shelling out to the system `patch`
 (`patch -p1 -d <cwd> -i <file>`, fail-closed); patch files resolve under the

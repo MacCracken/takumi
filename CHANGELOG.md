@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.8] - 2026-06-17
+
+Build sandbox, first bite — hermetic builds (network isolation) + a wall-clock
+timeout on every build step. 819 tests (was 814).
+
+### Added
+
+- **`src/sandbox.cyr` — `exec_vec_sandboxed(args, timeout_ms, isolate_net)`**,
+  now used by `_run_step` for every build phase:
+  - **Network isolation** — the step runs in a fresh network namespace (only a
+    down loopback, no external connectivity), created **unprivileged** via a
+    user namespace (`unshare(CLONE_NEWUSER|CLONE_NEWNET)`) with an *identity*
+    uid/gid map so the build keeps its real, non-root identity and files land
+    with correct ownership. Sources are already fetched + verified, so builds
+    need no network; cutting it makes them hermetic. Best-effort: where
+    unprivileged user namespaces are unavailable, the step runs un-isolated.
+  - **Wall-clock timeout** — the child leads a new session (`setsid`); a step
+    exceeding the ceiling (1 h) is `SIGKILL`ed by **process group** (so
+    `make`'s children die too) and reported as a build failure ("terminated
+    abnormally"). Always applies, isolation or not.
+  - **`sandbox_net_available()`** — a one-shot probe the CLI runs before the
+    build loop; `build --execute` prints whether isolation is **active** or
+    **unavailable**, then threads the mode into `exec_build`.
+  Security model in [ADR 0011](docs/adr/0011-build-sandbox.md) (first
+  installment of ADR 0005's deferred sandbox).
+- Tests: hermetic exit-code passthrough, the timeout sentinel (`sleep 30` under
+  a 300 ms ceiling → killed), empty-argv spawn error, and the probe returning a
+  clean boolean. Integration: a tolerant network-isolation case (asserts the
+  build saw 1 interface — loopback only — when isolation is active).
+
+### Changed
+
+- `_run_step` / `exec_build` take an `isolate_net` flag (CLI passes the probe
+  result; the four `exec_build` test call sites pass `0` for determinism).
+- Builder stamp + `takumi_version()` → 0.9.8.
+
+### Verified
+
+- Live: an isolated build step saw only `lo` via per-netns `/proc/net/dev` (host
+  has 3 interfaces); its output files were owned by the real uid (1000, not
+  `nobody` — identity map works); a `sleep 30` step under 300 ms was killed.
+
+### Known limitations
+
+- First bite only: **no filesystem confinement (Landlock) or seccomp yet**, no
+  PID/mount namespace beyond network isolation, fixed 1 h per-step timeout (no
+  per-recipe override). Isolation is best-effort (not fail-closed). All tracked
+  on the roadmap. This is hermeticity + liveness hardening, not a containment
+  boundary against malicious recipes (recipes are trusted).
+
 ## [0.9.7] - 2026-06-17
 
 Streaming source download — the artifact is now streamed straight to disk, so

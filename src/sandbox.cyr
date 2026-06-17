@@ -1,0 +1,158 @@
+# takumi — build sandbox: hermetic, bounded build-step execution.
+#
+# Recipe build steps are arbitrary shell BY DESIGN (ADR 0005), run over
+# sha256-verified sources. This module adds two guarantees on top, both
+# composing the existing fork/exec/wait shape (lib/process.cyr's `exec_vec`,
+# lib/regression.cyr's bounded-run loop) — Linux, unprivileged:
+#
+#   1. NETWORK ISOLATION (hermetic build). The step runs in a fresh network
+#      namespace with no external connectivity (only a down loopback). Sources
+#      are already fetched + verified before the build, so a build needs no
+#      network; cutting it makes builds hermetic (no surprise/un-pinned
+#      downloads) and removes a recipe's build-time fetch/exfil ability. The
+#      namespace is created UNPRIVILEGED via a user namespace
+#      (CLONE_NEWUSER|CLONE_NEWNET) with an *identity* uid/gid map, so the build
+#      keeps its real (non-root) identity and files land with correct ownership
+#      — matching takumi's no-root, DESTDIR-only build model.
+#
+#   2. WALL-CLOCK TIMEOUT. A runaway step is SIGKILLed — the whole process group
+#      (the child leads a new session via setsid, so `make`'s children die too)
+#      — after a fixed ceiling, so a hung/looping build can't wedge the builder.
+#
+# Isolation is best-effort: if unprivileged user namespaces are unavailable
+# (EPERM — e.g. a kernel with userns disabled), the step still runs un-isolated;
+# the caller probes once (`sandbox_net_available`) and reports the mode. The
+# timeout ALWAYS applies. Model in docs/adr/0011-build-sandbox.md.
+#
+# SECURITY SCOPE: this is hermeticity + liveness hardening, NOT a containment
+# boundary against malicious recipes (recipes are trusted; the build is already
+# unprivileged + DESTDIR-only). Filesystem confinement (Landlock) and seccomp
+# syscall filtering are later bites (roadmap).
+
+# unshare(2) is the only arch-varying number we need (CLONE_* and the poll-based
+# sleep are shared). x86_64 = 272; aarch64 = 97 (generic syscall table).
+#ifdef CYRIUS_ARCH_X86
+enum SandboxSysNr { SANDBOX_SYS_UNSHARE = 272; }
+#endif
+#ifdef CYRIUS_ARCH_AARCH64
+enum SandboxSysNr { SANDBOX_SYS_UNSHARE = 97; }
+#endif
+
+enum SandboxClone {
+    SANDBOX_CLONE_NEWUSER = 0x10000000;
+    SANDBOX_CLONE_NEWNET = 0x40000000;
+}
+
+# Per-step wall-clock ceiling + poll granularity. The ceiling is a generous
+# runaway backstop (a legitimate large build still fits; an infinite loop dies);
+# per-recipe override is future work.
+enum SandboxLimit {
+    SANDBOX_TIMEOUT_MS = 3600000;   # 1 hour per build step
+    SANDBOX_POLL_MS = 100;
+}
+
+# Write `len` bytes of `data` to `path` (a /proc map file). Best-effort:
+# returns 0 on full write, 0 - 1 otherwise.
+fn _sandbox_write_file(path, data, len) {
+    var fd = file_open(path, O_WRONLY, 0);
+    if (fd < 0) { return 0 - 1; }
+    var w = file_write(fd, data, len);
+    file_close(fd);
+    if (w != len) { return 0 - 1; }
+    return 0;
+}
+
+# A userns identity map line: "<id> <id> 1\n" (inside id == outside id, so the
+# build keeps its real, non-root identity and created files are owned by it).
+fn _sandbox_map_line(id) {
+    var sb = str_builder_new();
+    str_builder_add_int(sb, id);
+    str_builder_add_byte(sb, 32);
+    str_builder_add_int(sb, id);
+    str_builder_add_cstr(sb, " 1\n");
+    return str_cstr(str_builder_build(sb));
+}
+
+# Child-side: enter a fresh user+network namespace and install identity maps.
+# Returns 0 if isolated, 0 - 1 if unshare was refused (caller proceeds
+# un-isolated). Must be called in the forked child, before execve.
+fn _sandbox_apply_netns() {
+    var uid = sys_getuid();
+    var gid = sys_getgid();
+    if (syscall(SANDBOX_SYS_UNSHARE, SANDBOX_CLONE_NEWUSER | SANDBOX_CLONE_NEWNET) < 0) {
+        return 0 - 1;
+    }
+    # gid_map may only be written after denying setgroups in the new userns.
+    _sandbox_write_file("/proc/self/setgroups", "deny", 4);
+    var um = _sandbox_map_line(uid);
+    _sandbox_write_file("/proc/self/uid_map", um, strlen(um));
+    var gm = _sandbox_map_line(gid);
+    _sandbox_write_file("/proc/self/gid_map", gm, strlen(gm));
+    return 0;
+}
+
+# Probe (once per build) whether unprivileged user+network namespaces are
+# available on this host: fork a child that only attempts the unshare and
+# exits 0 on success. Returns 1 if isolation is available, else 0.
+fn sandbox_net_available() {
+    var pid = sys_fork();
+    if (pid < 0) { return 0; }
+    if (pid == 0) {
+        if (syscall(SANDBOX_SYS_UNSHARE, SANDBOX_CLONE_NEWUSER | SANDBOX_CLONE_NEWNET) < 0) {
+            sys_exit(1);
+        }
+        sys_exit(0);
+    }
+    var stbuf[1];
+    sys_waitpid(pid, &stbuf, 0);
+    var st = load32(&stbuf);
+    if (WIFEXITED(st) == 1) { if (WEXITSTATUS(st) == 0) { return 1; } }
+    return 0;
+}
+
+# Run argv (a vec of cstr; argv[0] is the binary) with an empty environment,
+# bounded by `timeout_ms`, optionally in a fresh network namespace
+# (`isolate_net` = 1). The child leads a new session so a timeout SIGKILLs its
+# whole process group. Returns the child's exit code (0..255), 128 + signal if
+# it was signalled, 0 - 1 on fork/spawn failure, or 0 - 2 on timeout.
+fn exec_vec_sandboxed(args, timeout_ms, isolate_net) {
+    var argc = vec_len(args);
+    if (argc < 1) { return 0 - 1; }
+    var cmd = vec_get(args, 0);
+    var argv = alloc((argc + 1) * 8);
+    var i = 0;
+    while (i < argc) {
+        store64(argv + i * 8, vec_get(args, i));
+        i = i + 1;
+    }
+    store64(argv + argc * 8, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+
+    var pid = sys_fork();
+    if (pid < 0) { return 0 - 1; }
+    if (pid == 0) {
+        sys_setsid();                                   # new process group for group-kill
+        if (isolate_net == 1) { _sandbox_apply_netns(); }   # best-effort hermeticity
+        sys_execve(cmd, argv, envp);
+        sys_exit(127);
+    }
+
+    var stbuf[1];
+    var elapsed = 0;
+    while (elapsed < timeout_ms) {
+        var w = sys_waitpid(pid, &stbuf, WNOHANG);
+        if (w == pid) {
+            var st = load32(&stbuf);
+            if (WIFEXITED(st) == 1) { return WEXITSTATUS(st); }
+            if (WIFSIGNALED(st) == 1) { return 128 + WTERMSIG(st); }
+            return 0 - 1;
+        }
+        syscall(7, 0, 0, SANDBOX_POLL_MS);              # poll(NULL,0,100ms) sleep (lib/regression.cyr)
+        elapsed = elapsed + SANDBOX_POLL_MS;
+    }
+    # Timeout: SIGKILL the build's whole process group, reap the leader, report.
+    sys_kill(0 - pid, 9);
+    sys_waitpid(pid, &stbuf, 0);
+    return 0 - 2;
+}

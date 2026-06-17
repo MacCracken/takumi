@@ -116,12 +116,28 @@
       Deferred from 0.9.6: appeared in none of the sampled real tarballs (PAX is
       the modern mechanism); add on the first real instance. See
       [ADR 0009](../adr/0009-pax-extended-headers.md).
-- [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
-      (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.
-- [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format) —
-      tracked on ark's roadmap (ark `docs/development/roadmap.md`, "`.ark`
-      package format" backlog); conformance ref is `src/ark_format.cyr`
-      + [ADR 0001](../adr/0001-ark-binary-format.md)
+- [x] Build sandbox — network isolation + timeout (0.9.8) — `src/sandbox.cyr`
+      `exec_vec_sandboxed` runs each build step in a fresh **network namespace**
+      (unprivileged user-namespace + identity uid/gid map; hermetic, no external
+      net) and under a **wall-clock timeout** (process-group `SIGKILL` on
+      overrun). Best-effort isolation (CLI probes + reports the mode). Model in
+      [ADR 0011](../adr/0011-build-sandbox.md). Verified live (build saw only
+      `lo`; correct file ownership; overrun killed). First installment of
+      ADR 0005's deferred sandbox.
+- [ ] Build sandbox — filesystem confinement (Landlock) — confine a step's
+      writes to DESTDIR + the build dir (read-only elsewhere). stdlib `agnosys`
+      `security_apply_landlock` (RO/RW fs rules) is the intended primitive; pulls
+      agnosys as a dep. Next sandbox bite.
+- [ ] Build sandbox — seccomp syscall filtering + PID/mount namespaces +
+      per-recipe timeout override + optional `--require-sandbox` (fail-closed).
+      Later sandbox bites. See [ADR 0011](../adr/0011-build-sandbox.md).
+
+- [x] ark-side `.ark` reader / installer — **implemented in ark**
+      (`ark/src/ark_package.cyr`): verifies root hash + ed25519 signature,
+      parses the manifest + file index, inflates the DEFLATE data, and
+      re-verifies every per-file content hash; format matches takumi's writer
+      field-for-field. Conformance ref `src/ark_format.cyr` +
+      [ADR 0001](../adr/0001-ark-binary-format.md).
 
 ## Future (post-0.9.x)
 

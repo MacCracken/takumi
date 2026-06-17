@@ -13,6 +13,7 @@ include "src/ark_format.cyr"
 include "src/source.cyr"
 include "src/fetch.cyr"
 include "src/engine.cyr"
+include "src/sandbox.cyr"
 include "src/build.cyr"
 include "src/cli.cyr"
 

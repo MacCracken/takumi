@@ -178,6 +178,36 @@ else
   echo "== PAX test skipped (needs python3 + tar) =="
 fi
 
+# Build sandbox: network isolation (0.9.8). A build step records how many
+# network interfaces it sees via /proc/net/dev (per-netns). When the CLI reports
+# isolation active, the step must see exactly 1 (loopback) — proof the build ran
+# in a fresh network namespace. Tolerant: where unprivileged user namespaces are
+# unavailable (CI seccomp, userns disabled), isolation is "unavailable" and we
+# only assert the build still succeeded (the timeout always applies).
+echo "== build --execute network isolation (sandbox) =="
+NSREC=/tmp/takumi-it-nsrec
+rm -rf "$NSREC" /tmp/takumi-build; mkdir -p "$NSREC"
+{
+  echo '[package]'; echo 'name = "netcheck"'; echo 'version = "1.0"'
+  echo 'description = "sandbox netns check"'; echo 'license = "MIT"'; echo
+  echo '[source]'; echo 'local = true'; echo
+  echo '[build]'; echo 'install = "mkdir -p $PKG/etc && grep -c : /proc/net/dev > $PKG/etc/nif.txt"'
+} > "$NSREC/netcheck.cyml"
+NSOUT=$("$BIN" build "$NSREC" --execute 2>&1); nsrc=$?
+check "build --execute (sandbox build ok)" 0 $nsrc
+NIF=$(cat /tmp/takumi-build/netcheck/pkg/etc/nif.txt 2>/dev/null)
+if echo "$NSOUT" | grep -q "isolation: active"; then
+  if [ "$NIF" = "1" ]; then
+    echo "  ok   network isolation active: build saw 1 interface (loopback only)"
+  else
+    echo "  FAIL isolation reported active but build saw $NIF interfaces"
+    fails=$((fails + 1))
+  fi
+else
+  echo "  ok   isolation unavailable here (userns off); build still ran, time-bounded"
+fi
+rm -rf "$NSREC" /tmp/takumi-build
+
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"
 if [ -d "$ZUGOT" ]; then

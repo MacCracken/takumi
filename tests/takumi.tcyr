@@ -12,6 +12,7 @@ include "src/ark_format.cyr"
 include "src/source.cyr"
 include "src/fetch.cyr"
 include "src/engine.cyr"
+include "src/sandbox.cyr"
 include "src/build.cyr"
 include "src/cli.cyr"
 
@@ -1569,7 +1570,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.7"), "builder stamp is takumi/0.9.7");
+    assert(streq(man_builder(cam_m), "takumi/0.9.8"), "builder stamp is takumi/0.9.8");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -2303,7 +2304,7 @@ fn main() {
         "mkdir -p \"$PKG/usr/bin\" && printf x > \"$PKG/usr/bin/t\"", 0, 0);
     var ok_recipe = recipe_new(be_pkg, be_src, be_dep, ok_bld, be_sec);
     var ok_ctx = stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", ok_recipe);
-    var ok_entry = exec_build(ok_ctx, 1000);
+    var ok_entry = exec_build(ok_ctx, 1000, 0);
     assert_eq(ble_status(ok_entry), BS_COMPLETE, "status COMPLETE");
     assert_eq(ble_started_at(ok_entry), 1000, "started_at threaded through");
     var okrb = alloc(8);
@@ -2334,7 +2335,7 @@ fn main() {
         "mkdir -p \"$PKG/should-not-exist\"", 0, 0);
     var bad_recipe = recipe_new(be_pkg, be_src, be_dep, bad_bld, be_sec);
     var bad_ctx = stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", bad_recipe);
-    var bad_entry = exec_build(bad_ctx, 1000);
+    var bad_entry = exec_build(bad_ctx, 1000, 0);
     assert_eq(ble_status(bad_entry), BS_FAILED, "status FAILED");
     assert(str_contains_cstr(str_from(ble_fail_msg(bad_entry)), "make") == 1, "fail_msg names the phase");
     assert(str_contains_cstr(str_from(ble_fail_msg(bad_entry)), "7") == 1, "fail_msg carries exit code");
@@ -2342,14 +2343,14 @@ fn main() {
     assert_eq(is_dir(str_from("/tmp/takumi-build-test/demo/pkg/should-not-exist")), 0, "later step did not run");
 
     test_group("exec_build: all-empty (meta) -> trivial COMPLETE");
-    var meta_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", st_recipe), 1000);
+    var meta_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", st_recipe), 1000, 0);
     assert_eq(ble_status(meta_entry), BS_COMPLETE, "meta package completes");
     assert_eq(vec_len(create_file_list("/tmp/takumi-build-test/demo/pkg")), 0, "empty fake-root");
 
     test_group("exec_build: empty middle step is skipped, not failed");
     var skip_bld = bld_new("", "true", "", "true", "", "");
     var skip_recipe = recipe_new(be_pkg, be_src, be_dep, skip_bld, be_sec);
-    var skip_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", skip_recipe), 1000);
+    var skip_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", skip_recipe), 1000, 0);
     assert_eq(ble_status(skip_entry), BS_COMPLETE, "skips empty configure, runs true steps");
 
     test_group("build: _build_cwd descends into a single tarball-root dir");
@@ -2366,6 +2367,24 @@ fn main() {
     assert(streq(_build_cwd(cw_ctx), cw_src), "multiple entries -> source dir");
 
     exec_vec(rmclean);
+
+    test_group("sandbox: exec_vec_sandboxed exit-code passthrough + timeout");
+    # normal exit codes pass through unchanged (un-isolated; timeout ample).
+    var sb_ok = vec_new();
+    vec_push(sb_ok, "/bin/sh"); vec_push(sb_ok, "-c"); vec_push(sb_ok, "exit 0");
+    assert_eq(exec_vec_sandboxed(sb_ok, 60000, 0), 0, "exit 0 -> 0");
+    var sb_7 = vec_new();
+    vec_push(sb_7, "/bin/sh"); vec_push(sb_7, "-c"); vec_push(sb_7, "exit 7");
+    assert_eq(exec_vec_sandboxed(sb_7, 60000, 0), 7, "exit 7 -> 7");
+    # a step that overruns the wall clock is SIGKILLed -> 0 - 2 (timeout).
+    var sb_hang = vec_new();
+    vec_push(sb_hang, "/bin/sh"); vec_push(sb_hang, "-c"); vec_push(sb_hang, "sleep 30");
+    assert_eq(exec_vec_sandboxed(sb_hang, 300, 0), 0 - 2, "overrun -> timeout (0 - 2)");
+    # bad argv (empty) -> spawn error.
+    assert_eq(exec_vec_sandboxed(vec_new(), 1000, 0), 0 - 1, "empty argv -> 0 - 1");
+    # the availability probe returns a clean boolean (env-dependent value).
+    var sb_av = sandbox_net_available();
+    assert(sb_av == 0 || sb_av == 1, "sandbox_net_available -> 0 or 1");
 
     test_group("apply_patches: real unified diff via system patch");
     var pdir = "/tmp/takumi-patch-test";
