@@ -140,9 +140,11 @@
       (`sandbox_fs_available`). Model in
       [ADR 0012](../adr/0012-landlock-fs-confinement.md). Verified live (a write
       outside the build area is blocked; `$PKG` writes succeed).
-- [ ] Build sandbox — seccomp syscall filtering + PID/mount namespaces +
-      per-recipe timeout override + tighter per-build write area + optional
-      `--require-sandbox` (fail-closed). Later sandbox bites. See
+- [ ] Build sandbox — seccomp syscall filtering + `--require-sandbox`
+      (fail-closed) + PID/mount namespaces + per-recipe timeout override +
+      tighter per-build write area. **Audit-informed**: the 0.11.x security audit
+      decides which are v1-warranted (likely seccomp + `--require-sandbox`) vs
+      post-1.0. See the [Path to 1.0](#path-to-10-the-011x-arc) and
       [ADR 0011](../adr/0011-build-sandbox.md) / [0012](../adr/0012-landlock-fs-confinement.md).
 
 - [x] ark-side `.ark` reader / installer — **implemented in ark**
@@ -164,6 +166,45 @@
 - [ ] Explicit `backup` file list (beyond `/etc/` heuristic)
 - [ ] Build options / feature flags per recipe
 - [ ] `size_compressed` in manifest
+
+## Path to 1.0 (the 0.11.x arc)
+
+The remaining work, sequenced. The last feature lands *before* the audit so the
+audit reviews the complete v1 surface; remediation + audit-warranted sandbox
+extras follow; then the 1.0 tag. (Decisions: criterion 1 met via driver +
+runbook; sandbox extras are audit-informed.)
+
+- **0.11.0 — Base-system build driver + operator runbook** (closes criterion 1).
+  - `build --execute --keep-going`: build every recipe in topo order, continue
+    past a failed package instead of aborting, and print a summary (built /
+    failed / skipped, with the failing phase per package). Default stays
+    fail-closed; `--keep-going` opts into the survey.
+  - `docs/guides/base-system-build.md`: operator runbook for driving the full
+    zugot set on a build host (toolchain prereqs, SOURCE_DATE_EPOCH, sandbox
+    modes, reading the report).
+  - Criterion 1 → met (demonstrated end-to-end real build + driver + runbook; a
+    full 309-package compile is an operator/CI activity).
+
+- **0.11.1 — Pre-v1 security audit** (review only; no behavior change).
+  - Threat-model-driven, per-stage review: parse → fetch (TLS, verify-before-use)
+    → extract (tar/PAX/GNU parser bounds + integer overflow, decompression-bomb
+    resistance, path-traversal completeness, mode/mtime) → patch → sandboxed
+    build (recipe-shell trust boundary, sandbox best-effort/fail-open coverage)
+    → package/sign (ed25519, reproducibility).
+  - External research: compare hardening to makepkg / ebuild sandbox / Nix /
+    sbuild.
+  - Deliverable: `docs/compliance/security-audit-2026.md` — findings table
+    (id · area · severity · disposition), threat model, residual-risk statement.
+    Produces the remediation backlog. Closes criterion 7's audit half.
+
+- **0.11.2 … 0.11.k — Audit remediation** (one bounded release per finding
+  cluster, severity order). Audit-warranted **sandbox extras** (likely seccomp +
+  `--require-sandbox`) fold in here; the rest defer to post-1.0. Pre-guessed
+  finding candidates: decompression-bomb output bound, parser bounds hardening,
+  opt-in fail-closed mode.
+
+- **1.0.0 — v1 release**: all eight criteria ✅, audit findings resolved or
+  risk-accepted, final docs/CHANGELOG/version pass, tag 1.0.0.
 
 ## v1.0 Criteria
 
