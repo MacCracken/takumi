@@ -93,6 +93,15 @@
       [ADR 0008](../adr/0008-v7-tar-checksum-gated-headers.md). Confirmed live
       against the real v7 GNU hello tarball.
 
+- [x] PAX extended header support (0.9.6) — `extract_archive` parses
+      POSIX.1-2001 PAX headers (`x` per-file, `g` global) for
+      `path`/`linkpath`/`size` overrides, so modern long-path tarballs extract
+      (OpenSSL 3.3.0 / CPython 3.12.3 failed with `SRC_ERR_UNSUPPORTED` before).
+      Overrides flow through the existing path-traversal guards (no new
+      surface). Model in [ADR 0009](../adr/0009-pax-extended-headers.md).
+      Verified byte-identical to system `tar` on real OpenSSL/CPython tarballs.
+      (GNU `L`/`K` long-name headers deferred — not seen in any sampled tarball.)
+
 ## Backlog (0.9.x)
 
 - [ ] Streaming download for sources > 128 MiB — blocked on a sandhi
@@ -100,6 +109,11 @@
       buffered GET pre-allocates the body, capping us at 128 MiB). Tracked on
       sandhi's roadmap ("Wait-for-second-consumer-ask" → "Streaming GET to an
       fd"); wire it once it lands. takumi is the first consumer ask.
+- [ ] GNU long-name/long-link tar headers (`L` = 76, `K` = 75) — the entry's
+      data block carries the next entry's long name/linkname (not PAX records).
+      Deferred from 0.9.6: appeared in none of the sampled real tarballs (PAX is
+      the modern mechanism); add on the first real instance. See
+      [ADR 0009](../adr/0009-pax-extended-headers.md).
 - [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
       (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.
 - [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format) —

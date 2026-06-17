@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.6] - 2026-06-17
+
+PAX extended header support — `extract_archive` now parses POSIX.1-2001 PAX
+headers (`x` per-file, `g` global) for `path`/`linkpath`/`size` overrides, so
+modern long-path tarballs extract. 814 tests (was 795).
+
+### Fixed
+
+- **`extract_archive` rejected PAX tarballs.** OpenSSL 3.3.0 (PAX global `g`
+  header) and CPython 3.12.3 (PAX per-file `x` header, a 108-byte path over the
+  100-byte `ustar` limit) both failed with `SRC_ERR_UNSUPPORTED`. Found by
+  surveying real upstream tarballs after the v7 work (0.9.5).
+
+### Added
+
+- **PAX extended header parsing** (`src/source.cyr`). Typeflags `x` (120,
+  per-file) and `g` (103, global) are intercepted before the entry dispatch;
+  their `len key=value\n` records are parsed (`_pax_parse`) for `path`,
+  `linkpath`, and `size`, applied to the governed entry (precedence per-file >
+  global > header), then consumed without emitting a filesystem entry. The
+  per-file record resets after each entry; the global record persists. Other
+  keys (`mtime`, `uid`, `comment`, …) are ignored. Model in
+  [ADR 0009](docs/adr/0009-pax-extended-headers.md).
+- Tests: a PAX fixture builder (`_tb_pax_record` with self-referential length
+  framing, `_tb_emit_pax`) covering path override (long name beats the `ustar`
+  placeholder), global-header tolerance, size override (`ustar` size 0 → PAX
+  size 5), linkpath override, and — security — a malicious PAX `path=../escape`
+  rejected with `SRC_ERR_UNSAFE_PATH`.
+- Integration (`scripts/integration.sh`): a real `tar --format=pax` loopback
+  build over a > 100-byte path, asserting the long path is reconstructed.
+
+### Security
+
+- PAX `path`/`linkpath` overrides flow through the **same** `_tar_path_is_safe`
+  / `_symlink_target_is_safe` guards as the header fields — PAX adds no
+  traversal surface (a `path=../escape` is rejected, covered by a test).
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.9.6.
+
+### Verified
+
+- OpenSSL 3.3.0 (`g`) and CPython 3.12.3 (`x`, 108-byte path) extract
+  **byte-identically to system `tar`** (full recursive content diff clean).
+
+### Known limitations
+
+- GNU long-name/long-link (`L`/`K`) extended headers remain unsupported
+  (`SRC_ERR_UNSUPPORTED`) — deferred until a real tarball needs them.
+
 ## [0.9.5] - 2026-06-17
 
 v7 (pre-POSIX) tar support — `extract_archive` now accepts the magic-less v7 tar

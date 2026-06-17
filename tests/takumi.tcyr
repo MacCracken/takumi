@@ -180,6 +180,52 @@ fn _tb_emit_file_v7(sb, name, typeflag, size, data) {
     return 0;
 }
 
+# Decimal digit count of n (>=0).
+fn _digits(n) {
+    if (n == 0) { return 1; }
+    var d = 0;
+    var v = n;
+    while (v > 0) { d = d + 1; v = v / 10; }
+    return d;
+}
+
+# Append one PAX record "<len> <key>=<value>\n" to a records str_builder.
+# <len> is the total byte length of the record including its own digits —
+# solved by fixpoint since the length is self-referential.
+fn _tb_pax_record(rsb, key, value) {
+    var base = strlen(key) + strlen(value) + 3;   # space + '=' + '\n'
+    var d = 1;
+    var total = base + 1;
+    while (_digits(total) != d) { d = _digits(total); total = base + d; }
+    str_builder_add_int(rsb, total);
+    str_builder_add_byte(rsb, 32);
+    str_builder_add_cstr(rsb, key);
+    str_builder_add_byte(rsb, 61);                 # '='
+    str_builder_add_cstr(rsb, value);
+    str_builder_add_byte(rsb, 10);                 # '\n'
+    return 0;
+}
+
+# Append a PAX extended header (typeflag 'x'=120 or 'g'=103) carrying the
+# already-built records Str as its (512-padded) data payload.
+fn _tb_emit_pax(sb, typeflag, recstr) {
+    var dptr = str_data(recstr);
+    var dlen = str_len(recstr);
+    var b = _tb_block();
+    _tb_put(b, 0, "PaxHeader");
+    store8(b + 156, typeflag);
+    _tb_put_size(b, dlen);
+    _tb_finalize(b);
+    _tb_app(sb, b, 512);
+    _tb_app(sb, dptr, dlen);
+    var pad = ((dlen + 511) / 512) * 512 - dlen;
+    if (pad > 0) {
+        var z = alloc(pad);
+        _tb_app(sb, z, pad);
+    }
+    return 0;
+}
+
 # Two zero blocks = end-of-archive terminator.
 fn _tb_terminator(sb) {
     var z = alloc(1024);
@@ -1523,7 +1569,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.5"), "builder stamp is takumi/0.9.5");
+    assert(streq(man_builder(cam_m), "takumi/0.9.6"), "builder stamp is takumi/0.9.6");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -1904,6 +1950,85 @@ fn main() {
     assert_eq(file_read_all("/tmp/takumi-extract-out/pured/f.txt", pvrb, 64), 3, "pured/f.txt size 3");
     assert_eq(memeq(pvrb, "abc", 3), 1, "pured/f.txt contents");
 
+    test_group("extract_archive: PAX 'x' path override (long name)");
+    sys_unlink("/tmp/takumi-extract-out/placeholder");
+    sys_unlink("/tmp/takumi-extract-out/paxdir/long-overridden-name.txt");
+    var pxrec = str_builder_new();
+    _tb_pax_record(pxrec, "path", "paxdir/long-overridden-name.txt");
+    var pxsb = str_builder_new();
+    _tb_emit_pax(pxsb, 120, str_builder_build(pxrec));
+    _tb_emit_file(pxsb, "placeholder", 48, 5, "world");
+    _tb_terminator(pxsb);
+    assert(_tb_write(pxsb, xarc) > 0, "write PAX path fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "PAX path -> 0");
+    assert(sys_access("/tmp/takumi-extract-out/placeholder", 0) != 0, "ustar placeholder name NOT used");
+    var pxrb = alloc(64);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/paxdir/long-overridden-name.txt", pxrb, 64), 5, "PAX path file size 5");
+    assert_eq(memeq(pxrb, "world", 5), 1, "PAX path file content");
+
+    test_group("extract_archive: PAX 'x' path is traversal-guarded");
+    # A malicious PAX path override must still hit _tar_path_is_safe.
+    var pxbadrec = str_builder_new();
+    _tb_pax_record(pxbadrec, "path", "../escape");
+    var pxbadsb = str_builder_new();
+    _tb_emit_pax(pxbadsb, 120, str_builder_build(pxbadrec));
+    _tb_emit_file(pxbadsb, "innocent", 48, 0, "");
+    _tb_terminator(pxbadsb);
+    assert(_tb_write(pxbadsb, xarc) > 0, "write malicious PAX path fixture");
+    assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "PAX ../escape -> UNSAFE_PATH");
+
+    test_group("extract_archive: PAX 'g' global header tolerated");
+    sys_unlink("/tmp/takumi-extract-out/afterglobal.txt");
+    var pgrec = str_builder_new();
+    _tb_pax_record(pgrec, "comment", "takumi-test");
+    var pgsb = str_builder_new();
+    _tb_emit_pax(pgsb, 103, str_builder_build(pgrec));
+    _tb_emit_file(pgsb, "afterglobal.txt", 48, 2, "ok");
+    _tb_terminator(pgsb);
+    assert(_tb_write(pgsb, xarc) > 0, "write PAX global fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "PAX global -> 0 (comment ignored)");
+    var pgrb = alloc(16);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/afterglobal.txt", pgrb, 16), 2, "file after global size 2");
+    assert_eq(memeq(pgrb, "ok", 2), 1, "file after global content");
+
+    test_group("extract_archive: PAX 'x' size override (ustar size 0)");
+    sys_unlink("/tmp/takumi-extract-out/sized.txt");
+    var szrec = str_builder_new();
+    _tb_pax_record(szrec, "size", "5");
+    var szsb = str_builder_new();
+    _tb_emit_pax(szsb, 120, str_builder_build(szrec));
+    # hand-built header: octal size 0, but a full 512-byte data block of "hello".
+    var szh = _tb_block();
+    _tb_put(szh, 0, "sized.txt");
+    store8(szh + 156, 48);
+    _tb_put_size(szh, 0);
+    _tb_finalize(szh);
+    _tb_app(szsb, szh, 512);
+    var szdata = alloc(512);
+    memcpy(szdata, "hello", 5);
+    _tb_app(szsb, szdata, 512);
+    _tb_terminator(szsb);
+    assert(_tb_write(szsb, xarc) > 0, "write PAX size fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "PAX size -> 0");
+    var szrb = alloc(16);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/sized.txt", szrb, 16), 5, "PAX size override -> 5 bytes");
+    assert_eq(memeq(szrb, "hello", 5), 1, "PAX size override content");
+
+    test_group("extract_archive: PAX 'x' linkpath override (symlink)");
+    sys_unlink("/tmp/takumi-extract-out/lnk2");
+    var lprec = str_builder_new();
+    _tb_pax_record(lprec, "linkpath", "real-target.txt");
+    var lpsb = str_builder_new();
+    _tb_emit_pax(lpsb, 120, str_builder_build(lprec));
+    _tb_emit_symlink(lpsb, "lnk2", "x");   # ustar linkname placeholder, overridden
+    _tb_terminator(lpsb);
+    assert(_tb_write(lpsb, xarc) > 0, "write PAX linkpath fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "PAX linkpath -> 0");
+    var lpbuf = alloc(64);
+    var lpn = sys_readlink("/tmp/takumi-extract-out/lnk2", lpbuf, 64);
+    assert_eq(lpn, 15, "symlink target length 15");
+    assert_eq(memeq(lpbuf, "real-target.txt", 15), 1, "PAX linkpath override target");
+
     test_group("extract_archive: 512-byte non-tar block rejected (checksum gate)");
     # A full 512-byte block with neither ustar magic nor a valid checksum must
     # still be rejected — the checksum is the gate that replaced the magic.
@@ -2093,9 +2218,14 @@ fn main() {
     sys_unlink("/tmp/takumi-extract-out/v7.txt");
     sys_unlink("/tmp/takumi-extract-out/v7d/inner.txt");
     sys_unlink("/tmp/takumi-extract-out/pured/f.txt");
+    sys_unlink("/tmp/takumi-extract-out/paxdir/long-overridden-name.txt");
+    sys_unlink("/tmp/takumi-extract-out/afterglobal.txt");
+    sys_unlink("/tmp/takumi-extract-out/sized.txt");
+    sys_unlink("/tmp/takumi-extract-out/lnk2");
     sys_rmdir("/tmp/takumi-extract-out/sub");
     sys_rmdir("/tmp/takumi-extract-out/v7d");
     sys_rmdir("/tmp/takumi-extract-out/pured");
+    sys_rmdir("/tmp/takumi-extract-out/paxdir");
     sys_rmdir(xdest);
     sys_unlink(xarc);
     sys_unlink("/tmp/takumi-extract.tar.gz");

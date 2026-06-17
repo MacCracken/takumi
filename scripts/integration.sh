@@ -138,6 +138,45 @@ else
   echo "== patch test skipped (needs python3 + tar + diff) =="
 fi
 
+# PAX-format tarball end to end: a real `tar --format=pax` archive with a path
+# over the 100-byte ustar limit (forcing a PAX 'x' path record) + the global
+# 'g' header pax always emits. Confirms extraction reconstructs the long path.
+# Needs python3 + tar; skipped otherwise.
+if command -v python3 >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+  echo "== build --execute over a PAX tarball (long path) =="
+  SRV=/tmp/takumi-it-xsrv; REC=/tmp/takumi-it-xrec
+  rm -rf "$SRV" "$REC" /tmp/takumi-build; mkdir -p "$REC"
+  # a path well over 100 bytes so tar must emit a PAX 'x' path record.
+  DEEP="pkgsrc/a-rather-deeply-nested-directory-name/and-another-long-segment-here/plus-one-more-to-be-safe"
+  mkdir -p "$SRV/$DEEP"
+  echo "pax-long-path-payload" > "$SRV/$DEEP/payload.txt"
+  echo "top" > "$SRV/pkgsrc/top.txt"
+  tar --format=pax -czf "$SRV/demo-1.0.tar.gz" -C "$SRV" pkgsrc
+  SHA=$(sha256sum "$SRV/demo-1.0.tar.gz" | cut -d' ' -f1)
+  {
+    echo '[package]'; echo 'name = "demo"'; echo 'version = "1.0"'
+    echo 'description = "loopback pax demo"'; echo 'license = "MIT"'; echo
+    echo '[source]'; echo 'url = "http://127.0.0.1:8101/demo-1.0.tar.gz"'
+    echo "sha256 = \"$SHA\""; echo
+    # cwd is the extracted root (pkgsrc/). The build asserts the long PAX path
+    # was reconstructed, then copies it into the fake-root.
+    echo '[build]'; echo 'install = "test -f a-rather-deeply-nested-directory-name/and-another-long-segment-here/plus-one-more-to-be-safe/payload.txt && mkdir -p $PKG/etc && cp a-rather-deeply-nested-directory-name/and-another-long-segment-here/plus-one-more-to-be-safe/payload.txt $PKG/etc/pax.txt"'
+  } > "$REC/demo.cyml"
+  ( cd "$SRV" && python3 -m http.server 8101 >/dev/null 2>&1 & echo $! > /tmp/takumi-it-xsrv.pid )
+  sleep 1
+  "$BIN" build "$REC" --execute >/dev/null 2>&1; check "build --execute (PAX long path)" 0 $?
+  if [ -f /tmp/takumi-build/out/demo.ark ] && grep -q pax-long-path-payload /tmp/takumi-build/demo/pkg/etc/pax.txt 2>/dev/null; then
+    echo "  ok   PAX 'x'/'g' headers parsed, long path reconstructed end to end"
+  else
+    echo "  FAIL PAX long path was not reconstructed"
+    fails=$((fails + 1))
+  fi
+  kill "$(cat /tmp/takumi-it-xsrv.pid 2>/dev/null)" 2>/dev/null
+  rm -rf "$SRV" "$REC" /tmp/takumi-build /tmp/takumi-it-xsrv.pid
+else
+  echo "== PAX test skipped (needs python3 + tar) =="
+fi
+
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"
 if [ -d "$ZUGOT" ]; then
