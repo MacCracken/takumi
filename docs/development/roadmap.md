@@ -57,14 +57,21 @@
       real CLI over vendored recipe fixtures (`tests/fixtures/recipes/`) +
       optional zugot corpus sweep; `ci.yml` now runs fmt/lint/test/fuzz/bench/
       integration gates.
+- [x] Build execution + fake-root staging (0.9.1) — `src/build.cyr`
+      `exec_build` runs the `[build]` steps via `/bin/sh -c` into a DESTDIR
+      fake-root, fail-closed, then packages to `.ark`; CLI `build --execute`.
+      **Unprivileged + DESTDIR-only** (no root/shakti); security model in
+      [ADR 0005](../adr/0005-build-execution.md). Full coverage over real
+      recipes waits on source download.
 
 ## Backlog (0.9.x)
 
 - [ ] Source download (network fetch over HTTPS) — incl. resolving
-      `github_release` → asset URL; pairs with `verify_source_hash`
+      `github_release` → asset URL; pairs with `verify_source_hash`. Unblocks
+      `build --execute` over real (non-local) recipes.
 - [ ] Patch application
-- [ ] Build execution (shell-out to configure/make/install)
-- [ ] Fake-root installation directory management
+- [ ] Build sandbox — unshare mount/network/PID namespaces + rlimit/timeout
+      (deferred from 0.9.1; needs unwrapped syscalls). See ADR 0005.
 - [ ] ark-side `.ark` reader / installer (consumes the 0.8.2 format) —
       tracked on ark's roadmap (ark `docs/development/roadmap.md`, "`.ark`
       package format" backlog); conformance ref is `src/ark_format.cyr`

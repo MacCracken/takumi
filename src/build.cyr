@@ -1,0 +1,185 @@
+# takumi — build execution: run a recipe's [build] steps into a fake-root.
+#
+# This is the keystone: a verified, extracted source tree + the recipe's
+# shell build steps -> a populated DESTDIR fake-root that the existing
+# packaging path (create_file_list -> create_ark_manifest -> ark_write)
+# turns into a .ark.
+#
+# SECURITY MODEL (see docs/adr/0005-build-execution.md):
+#   - The entire build runs UNPRIVILEGED and installs ONLY into the fake-root
+#     DESTDIR. takumi build never writes to "/" and needs no root / no setuid
+#     helper — the privilege boundary lives downstream in ark/shakti.
+#   - Recipe steps are arbitrary shell BY DESIGN (recipes are build scripts).
+#     takumi runs them verbatim via `/bin/sh -c`; it adds no injection surface
+#     beyond the fixed, single-quoted cd/export prelude. Trust model: curated
+#     recipes + sha-pinned, verified sources.
+#   - v1 has NO fs/network/PID sandbox and NO rlimit/timeout (documented
+#     limitations; operator runs as a throwaway unprivileged build user).
+#   - Fail-closed: stop at the first failing step; never package a partial
+#     fake-root.
+#
+# Steps run via exec_vec(["/bin/sh","-c", wrapped]) — exec_vec inherits
+# stdout+stderr (build output streams, errors visible), execve's with an empty
+# env (so env is baked into the wrapped command), reaps its child, and returns
+# the exit code (127 = sh/exec not found, negative = fork/abnormal exit).
+
+enum BuildPhase {
+    BP_PRE_BUILD = 0;
+    BP_CONFIGURE = 1;
+    BP_MAKE = 2;
+    BP_CHECK = 3;
+    BP_INSTALL = 4;
+    BP_POST_INSTALL = 5;
+}
+
+# Single-quote a value for safe embedding in the shell prelude. Single
+# quotes disable all interpretation; the only escape is `'` itself, which
+# becomes the classic `'\''`. Applied uniformly so a pathological path or
+# flag string can't break out of the quoting.
+fn _sh_squote(s) {
+    var sb = str_builder_new();
+    str_builder_add_byte(sb, 39);
+    var n = 0;
+    if (s != 0) { n = strlen(s); }
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i) & 0xFF;
+        if (c == 39) {
+            str_builder_add_byte(sb, 39);
+            str_builder_add_byte(sb, 92);
+            str_builder_add_byte(sb, 39);
+            str_builder_add_byte(sb, 39);
+        } else {
+            str_builder_add_byte(sb, c);
+        }
+        i = i + 1;
+    }
+    str_builder_add_byte(sb, 39);
+    return str_cstr(str_builder_build(sb));
+}
+
+# The `export KEY='VALUE' && …` prelude run before every step: the fake-root
+# (PKG/DESTDIR), hardening CFLAGS/LDFLAGS, plus reproducibility knobs.
+fn _build_env_prelude(ctx) {
+    var sec = recipe_security(bcx_recipe(ctx));
+    var pkgdir = bcx_package_dir(ctx);
+    var cflags = str_cstr(generate_cflags(sec_hardening(sec), sec_cflags(sec)));
+    var ldflags = str_cstr(generate_ldflags(sec_hardening(sec), sec_ldflags(sec)));
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "export PKG=");
+    str_builder_add_cstr(sb, _sh_squote(pkgdir));
+    str_builder_add_cstr(sb, "\nexport DESTDIR=");
+    str_builder_add_cstr(sb, _sh_squote(pkgdir));
+    str_builder_add_cstr(sb, "\nexport CFLAGS=");
+    str_builder_add_cstr(sb, _sh_squote(cflags));
+    str_builder_add_cstr(sb, "\nexport LDFLAGS=");
+    str_builder_add_cstr(sb, _sh_squote(ldflags));
+    str_builder_add_cstr(sb, "\nexport MAKEFLAGS='-j1'\nexport LC_ALL=C\numask 022\n");
+    return str_cstr(str_builder_build(sb));
+}
+
+# Wrap one step as a newline-separated shell script: cd into the build cwd
+# (fail-closed if it doesn't exist), apply the env prelude, then run the step
+# verbatim on its own line. Newline separation (not `&&`/`{ }`) lets the step
+# span multiple lines / backslash-continuations, and makes the script's exit
+# code the step's exit code.
+fn _build_wrap(step, cwd, prelude) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "cd ");
+    str_builder_add_cstr(sb, _sh_squote(cwd));
+    str_builder_add_cstr(sb, " || exit 1\n");
+    str_builder_add_cstr(sb, prelude);
+    str_builder_add_cstr(sb, step);
+    str_builder_add_cstr(sb, "\n");
+    return str_cstr(str_builder_build(sb));
+}
+
+# Run a single build step. Skips (returns 0) when the step is absent/empty.
+# cwd is the source dir when present, else the build dir.
+fn _run_step(ctx, step) {
+    if (step == 0) { return 0; }
+    if (strlen(step) == 0) { return 0; }
+    var cwd = bcx_source_dir(ctx);
+    if (cwd == 0) {
+        cwd = bcx_build_dir(ctx);
+    } else {
+        if (is_dir(str_from(cwd)) == 0) { cwd = bcx_build_dir(ctx); }
+    }
+    var prelude = _build_env_prelude(ctx);
+    var wrapped = _build_wrap(step, cwd, prelude);
+    var args = vec_new();
+    vec_push(args, "/bin/sh");
+    vec_push(args, "-c");
+    vec_push(args, wrapped);
+    return exec_vec(args);
+}
+
+# Stage build_root/<pkg>/{src,build,pkg}. The fake-root `pkg/` is emptied
+# first (best-effort) so create_file_list sees only this build's output.
+# Returns a BuildContext, or 0 on mkdir failure.
+fn stage_build_dirs(build_root, output_dir, pkg, arch, recipe) {
+    var base = _join2(build_root, pkg);
+    var src = _join2(base, "src");
+    var build = _join2(base, "build");
+    var pkgdir = _join2(base, "pkg");
+
+    var rmargs = vec_new();
+    vec_push(rmargs, "/bin/rm");
+    vec_push(rmargs, "-rf");
+    vec_push(rmargs, pkgdir);
+    exec_vec(rmargs);
+
+    if (_mkdir_p(base) != 0) { return 0; }
+    if (_mkdir_p(src) != 0) { return 0; }
+    if (_mkdir_p(build) != 0) { return 0; }
+    if (_mkdir_p(pkgdir) != 0) { return 0; }
+
+    var a = arch;
+    if (a == 0) { a = pkg_arch(recipe_package(recipe)); }
+    if (a == 0) { a = "x86_64"; }
+    return bcx_new(recipe, src, build, pkgdir, output_dir, a);
+}
+
+# Build the BS_FAILED log entry for a step failure.
+fn _build_fail(pkgname, phase, rc, started) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, phase);
+    if (rc < 0) {
+        str_builder_add_cstr(sb, " terminated abnormally");
+    } else {
+        str_builder_add_cstr(sb, " failed (exit ");
+        str_builder_add_int(sb, rc);
+        str_builder_add_cstr(sb, ")");
+    }
+    var msg = str_cstr(str_builder_build(sb));
+    var end = clock_epoch_secs();
+    return ble_new(pkgname, BS_FAILED, started, end, end - started, msg);
+}
+
+# Run the six build phases in order, advancing BuildStatus, fail-closed.
+# `started` is the start epoch (caller passes clock_epoch_secs(); tests pass a
+# fixed value for deterministic started_at). Returns a BuildLogEntry with
+# status BS_COMPLETE, or BS_FAILED + a fail_msg naming the phase + exit code.
+fn exec_build(ctx, started) {
+    var bld = recipe_build(bcx_recipe(ctx));
+    var pkgname = pkg_name(recipe_package(bcx_recipe(ctx)));
+
+    # Phases in order. Status mapping (informational): pre_build+configure ->
+    # CONFIGURING, make -> BUILDING, check -> TESTING, install+post_install ->
+    # INSTALLING. Stop at the first non-zero exit (fail-closed).
+    var rc = _run_step(ctx, bld_pre_build(bld));
+    if (rc != 0) { return _build_fail(pkgname, "pre_build", rc, started); }
+    rc = _run_step(ctx, bld_configure(bld));
+    if (rc != 0) { return _build_fail(pkgname, "configure", rc, started); }
+    rc = _run_step(ctx, bld_make(bld));
+    if (rc != 0) { return _build_fail(pkgname, "make", rc, started); }
+    rc = _run_step(ctx, bld_check(bld));
+    if (rc != 0) { return _build_fail(pkgname, "check", rc, started); }
+    rc = _run_step(ctx, bld_install(bld));
+    if (rc != 0) { return _build_fail(pkgname, "install", rc, started); }
+    rc = _run_step(ctx, bld_post_install(bld));
+    if (rc != 0) { return _build_fail(pkgname, "post_install", rc, started); }
+
+    var end = clock_epoch_secs();
+    return ble_new(pkgname, BS_COMPLETE, started, end, end - started, 0);
+}

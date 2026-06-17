@@ -12,6 +12,7 @@ include "src/package.cyr"
 include "src/ark_format.cyr"
 include "src/source.cyr"
 include "src/engine.cyr"
+include "src/build.cyr"
 include "src/cli.cyr"
 
 # Entry point: initialize the allocator, read argv, and dispatch to the

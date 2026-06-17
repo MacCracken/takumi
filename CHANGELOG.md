@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.1] - 2026-06-17
+
+Build execution — the keystone. takumi can now run a recipe's `[build]` steps
+into a fake-root and package the result into a `.ark`. It's also the heaviest
+pre-v1 security surface, so the design leads with a deliberate invariant:
+**the whole build runs unprivileged and installs only into a DESTDIR fake-root
+— no root, no setuid helper** (see [ADR 0005](docs/adr/0005-build-execution.md)).
+756 tests (was 733).
+
+### Added
+
+- **`src/build.cyr` — build executor.** `exec_build(ctx, started)` runs the six
+  phases (pre_build → configure → make → check → install → post_install),
+  skipping empty steps, advancing `BuildStatus`, **fail-closed** (stops on the
+  first non-zero exit; never packages a partial fake-root), and returns a
+  `BuildLogEntry` (COMPLETE or FAILED + phase/exit-code). Steps run via
+  `/bin/sh -c` (`exec_vec`, stdout/stderr inherited) with a single-quoted env
+  prelude (`PKG`/`DESTDIR` = fake-root, `CFLAGS`/`LDFLAGS` from hardening,
+  `MAKEFLAGS=-j1`, `LC_ALL=C`, `umask 022`).
+- **`stage_build_dirs`** — lays out `build_root/<pkg>/{src,build,pkg}` and
+  empties the fake-root before a build.
+- **CLI `build --execute` / `-x`** — default `build <dir>` stays a dry-run plan
+  (exit 2); execute mode builds each recipe in topo order and packages
+  `BS_COMPLETE` results into an unsigned `.ark`. Recipes whose source isn't
+  staged (download deferred) are skipped, not failed; a failed build stops the
+  run. Local meta-packages build + package trivially.
+- Tests: hermetic build-execution group (trivial shell steps) — success
+  populates the fake-root, a failing step is fail-closed with a phase/exit
+  message, all-empty meta completes, empty middle steps skip; and a completed
+  build chains `create_file_list → create_ark_manifest → ark_write → ark_read`.
+  Integration harness gains a `build --execute` case that produces a real `.ark`
+  for the local fixture.
+- [ADR 0005](docs/adr/0005-build-execution.md) — build-execution security model.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.9.1.
+- Roadmap: build execution → Completed (with the no-download caveat and the
+  deferred build-sandbox noted).
+
 ## [0.9.0] - 2026-06-17
 
 Opens the 0.9.x arc. The planned first step — integration tests + CI — was

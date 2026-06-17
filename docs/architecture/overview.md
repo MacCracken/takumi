@@ -65,7 +65,7 @@ access) so every command is unit-testable by exit code. Exit codes: `0` ok,
 3. Resolve:  [package names] -> topological build order (Kahn's algorithm)
 4. Source:   verify_source_hash (SHA-256 vs recipe) -> extract_archive
              (.tar/.tar.gz/.tar.xz/.tar.bz2, path-traversal-guarded) -> source tree (src/source.cyr)
-5. Build:    (not yet implemented) configure, make, install -> fake-root
+5. Build:    exec_build runs [build] steps via /bin/sh -c (unprivileged) -> fake-root (src/build.cyr)
 6. Package:  installed files -> ArkManifest + ArkFileEntry list (src/package.cyr,
              symlink-aware) -> serialized .ark v1 (src/ark_format.cyr): TOML
              manifest + file index + DEFLATE data + SHA-256 root + ed25519 signature
@@ -85,6 +85,18 @@ ISIZE-sized, xz/bz2 grow-retry) with a fail-closed path-traversal guard
 (rejects `..`, absolute paths, and escaping symlink targets; unsupported tar
 entry types abort). Network download stays in 0.9.x; the safety model is in
 [ADR 0002](../adr/0002-source-extraction-safety.md).
+
+### Build execution (`src/build.cyr`)
+
+`exec_build(ctx, started)` runs the recipe's six `[build]` phases via
+`/bin/sh -c` (env baked into a single-quoted prelude: `PKG`/`DESTDIR` =
+fake-root, `CFLAGS`/`LDFLAGS`, `MAKEFLAGS=-j1`, `LC_ALL=C`, `umask 022`),
+advancing `BuildStatus`, fail-closed, returning a `BuildLogEntry`. The whole
+build runs **unprivileged** and writes only into the DESTDIR fake-root — no
+root, no setuid helper (the privilege boundary is downstream in ark/shakti).
+`stage_build_dirs` lays out `build_root/<pkg>/{src,build,pkg}`. CLI: `build
+--execute`. Security model + deferred sandbox in
+[ADR 0005](../adr/0005-build-execution.md).
 
 ### `.ark` serialization (`src/ark_format.cyr`)
 

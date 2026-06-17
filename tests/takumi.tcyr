@@ -11,6 +11,7 @@ include "src/package.cyr"
 include "src/ark_format.cyr"
 include "src/source.cyr"
 include "src/engine.cyr"
+include "src/build.cyr"
 include "src/cli.cyr"
 
 # Build a vec of cstrings from up to 6 literals. 0 means "skip the rest".
@@ -1482,7 +1483,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.9.0"), "builder stamp is takumi/0.9.0");
+    assert(streq(man_builder(cam_m), "takumi/0.9.1"), "builder stamp is takumi/0.9.1");
 
     test_group("create_ark_manifest: arch from recipe when set");
     assert(streq(man_arch(cam_m), "x86_64"), "arch from recipe (x86_64 set)");
@@ -2028,6 +2029,89 @@ fn main() {
     # ===================================================================
     # src/cli.cyr — dispatch + commands (exit-code assertions).
     # ===================================================================
+    # ===================================================================
+    # src/build.cyr — build execution (hermetic, trivial shell steps).
+    # ===================================================================
+    test_group("build: _sh_squote");
+    assert(streq(_sh_squote("abc"), "'abc'"), "plain -> single-quoted");
+    assert(streq(_sh_squote("a'b"), "'a'\\''b'"), "embedded quote escaped");
+
+    var bld_root = "/tmp/takumi-build-test";
+    var rmclean = vec_new();
+    vec_push(rmclean, "/bin/rm"); vec_push(rmclean, "-rf"); vec_push(rmclean, bld_root);
+    exec_vec(rmclean);
+
+    # Shared recipe scaffold: a local meta-package shell with overridable [build].
+    var be_pkg = pkg_new("demo", "1.0.0", "build exec demo", "MIT", vec_new(), 1, "x86_64");
+    var be_src = src_new_local(vec_new());
+    var be_dep = dep_new(vec_new(), vec_new());
+    var be_sec = sec_new(vec_new(), 0, 0);
+
+    test_group("stage_build_dirs creates src/build/pkg");
+    var st_bld = bld_new(0, 0, 0, 0, 0, 0);
+    var st_recipe = recipe_new(be_pkg, be_src, be_dep, st_bld, be_sec);
+    var st_ctx = stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", st_recipe);
+    assert(st_ctx != 0, "stage returns a context");
+    assert_eq(is_dir(str_from("/tmp/takumi-build-test/demo/src")), 1, "src dir created");
+    assert_eq(is_dir(str_from("/tmp/takumi-build-test/demo/build")), 1, "build dir created");
+    assert_eq(is_dir(str_from("/tmp/takumi-build-test/demo/pkg")), 1, "pkg (fake-root) created");
+
+    test_group("exec_build: success populates the fake-root");
+    var ok_bld = bld_new(0, 0, 0,
+        "mkdir -p \"$PKG/usr/bin\" && printf x > \"$PKG/usr/bin/t\"", 0, 0);
+    var ok_recipe = recipe_new(be_pkg, be_src, be_dep, ok_bld, be_sec);
+    var ok_ctx = stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", ok_recipe);
+    var ok_entry = exec_build(ok_ctx, 1000);
+    assert_eq(ble_status(ok_entry), BS_COMPLETE, "status COMPLETE");
+    assert_eq(ble_started_at(ok_entry), 1000, "started_at threaded through");
+    var okrb = alloc(8);
+    assert_eq(file_read_all("/tmp/takumi-build-test/demo/pkg/usr/bin/t", okrb, 8), 1, "installed file is 1 byte");
+    assert_eq(load8(okrb) & 0xFF, 120, "installed file contents = 'x'");
+
+    test_group("exec_build -> create_file_list -> manifest -> .ark (packaging chain)");
+    var be_entries = create_file_list("/tmp/takumi-build-test/demo/pkg");
+    # entries (sorted): /usr, /usr/bin, /usr/bin/t
+    assert_eq(vec_len(be_entries), 3, "3 entries from the built fake-root");
+    var found_t = 0;
+    var bei = 0;
+    while (bei < vec_len(be_entries)) {
+        if (streq(afe_path(vec_get(be_entries, bei)), "/usr/bin/t")) {
+            assert_eq(afe_file_type(vec_get(be_entries, bei)), ARK_FT_REGULAR, "/usr/bin/t is REGULAR");
+            found_t = 1;
+        }
+        bei = bei + 1;
+    }
+    assert_eq(found_t, 1, "built file appears in the file list");
+    var be_man = create_ark_manifest(ok_recipe, be_entries, "x86_64", 1700000000);
+    sys_unlink("/tmp/takumi-build-test/demo.ark");
+    assert_eq(ark_write(be_man, be_entries, "/tmp/takumi-build-test/demo/pkg", "/tmp/takumi-build-test/demo.ark", 0), 0, "ark_write the built package -> 0");
+    assert(ark_read("/tmp/takumi-build-test/demo.ark", 1048576) != 0, "built .ark reads + verifies");
+
+    test_group("exec_build: failing step -> FAILED, fail-closed");
+    var bad_bld = bld_new(0, "exit 7", 0,
+        "mkdir -p \"$PKG/should-not-exist\"", 0, 0);
+    var bad_recipe = recipe_new(be_pkg, be_src, be_dep, bad_bld, be_sec);
+    var bad_ctx = stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", bad_recipe);
+    var bad_entry = exec_build(bad_ctx, 1000);
+    assert_eq(ble_status(bad_entry), BS_FAILED, "status FAILED");
+    assert(str_contains_cstr(str_from(ble_fail_msg(bad_entry)), "make") == 1, "fail_msg names the phase");
+    assert(str_contains_cstr(str_from(ble_fail_msg(bad_entry)), "7") == 1, "fail_msg carries exit code");
+    # install never ran (it's after the failing make) -> fake-root has no marker
+    assert_eq(is_dir(str_from("/tmp/takumi-build-test/demo/pkg/should-not-exist")), 0, "later step did not run");
+
+    test_group("exec_build: all-empty (meta) -> trivial COMPLETE");
+    var meta_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", st_recipe), 1000);
+    assert_eq(ble_status(meta_entry), BS_COMPLETE, "meta package completes");
+    assert_eq(vec_len(create_file_list("/tmp/takumi-build-test/demo/pkg")), 0, "empty fake-root");
+
+    test_group("exec_build: empty middle step is skipped, not failed");
+    var skip_bld = bld_new("", "true", "", "true", "", "");
+    var skip_recipe = recipe_new(be_pkg, be_src, be_dep, skip_bld, be_sec);
+    var skip_entry = exec_build(stage_build_dirs(bld_root, "/tmp/takumi-build-test/out", "demo", "x86_64", skip_recipe), 1000);
+    assert_eq(ble_status(skip_entry), BS_COMPLETE, "skips empty configure, runs true steps");
+
+    exec_vec(rmclean);
+
     test_group("cli_dispatch: version/help/usage/unknown");
     assert_eq(cli_dispatch(pkg_vec("version", 0, 0, 0, 0, 0)), 0, "version -> 0");
     assert_eq(cli_dispatch(pkg_vec("help", 0, 0, 0, 0, 0)), 0, "help -> 0");
@@ -2066,7 +2150,10 @@ fn main() {
     assert_eq(cmd_list(cli_dir), 0, "list dir -> 0");
     assert_eq(cmd_list("/tmp/takumi-cli-does-not-exist"), 1, "list missing dir -> 1");
     assert_eq(cmd_order(cli_dir), 0, "order dir -> 0");
-    assert_eq(cmd_build(cli_dir), 2, "build dir -> 2 (execution pending)");
+    assert_eq(cmd_build(cli_dir, 0), 2, "build dir (dry-run) -> 2");
+    # execute mode over local/url fixtures: local meta-package builds (empty
+    # steps -> COMPLETE -> packaged); url fixtures skip (source not staged).
+    assert_eq(cmd_build(cli_dir, 1), 0, "build --execute -> 0 (local builds, url skipped)");
     # via dispatch too
     assert_eq(cli_dispatch(pkg_vec("order", cli_dir, 0, 0, 0, 0)), 0, "dispatch order -> 0");
     assert_eq(cli_dispatch(pkg_vec("build", cli_dir, 0, 0, 0, 0)), 2, "dispatch build -> 2");

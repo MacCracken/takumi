@@ -52,6 +52,18 @@ echo "== list / order / build over fixtures dir =="
 "$BIN" order "$FIXTURES" >/dev/null 2>&1;  check "order" 0 $?
 "$BIN" build "$FIXTURES" >/dev/null 2>&1;  check "build (dry-run plan)" 2 $?
 
+echo "== build --execute (local builds; url/github skip, no download yet) =="
+rm -rf /tmp/takumi-build
+"$BIN" build "$FIXTURES" --execute >/dev/null 2>&1; check "build --execute" 0 $?
+# the local meta-package (libgbm) should have produced a .ark
+if [ -f /tmp/takumi-build/out/libgbm.ark ]; then
+  echo "  ok   local package produced libgbm.ark"
+else
+  echo "  FAIL no .ark produced for the local package"
+  fails=$((fails + 1))
+fi
+rm -rf /tmp/takumi-build
+
 # Optional: validate the whole zugot corpus (regression guard, local only).
 ZUGOT="${ZUGOT_DIR:-../zugot}"
 if [ -d "$ZUGOT" ]; then
