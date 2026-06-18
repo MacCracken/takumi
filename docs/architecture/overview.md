@@ -13,8 +13,8 @@ zugot (recipes)  -->  takumi (build engine)  -->  .ark packages  -->  ark (insta
 
 ## Module Map
 
-Takumi is currently a single-module library (`src/lib.rs`) with the following
-logical sections:
+Takumi is a multi-file Cyrius binary under `src/*.cyr` (entry `src/main.cyr` →
+`src/cli.cyr`). The logical model:
 
 ### Recipe Types (Input)
 
@@ -50,11 +50,12 @@ logical sections:
 
 `main` initializes the allocator, reads `argv`, and calls `cli_dispatch(args)`,
 which returns the process exit code. Commands: `validate <recipe.cyml>...`,
-`list <dir>`, `order <dir>`, `build <dir>` (dry-run plan; execution is 0.9.x),
-`version`, `help`. Dispatch is a plain function over a vec of cstrs (no `argv`
-access) so every command is unit-testable by exit code. Exit codes: `0` ok,
-`1` operational error, `2` usage / not-implemented. See
-[ADR 0003](../adr/0003-cli-surface.md).
+`list <dir>`, `order <dir>`, `build <dir> [--execute|-x] [--keep-going|-k]
+[--require-sandbox] [--signing-key <path>]`, `version`, `help`. `build` without
+`--execute` prints the plan (exit 2); with it, runs the full pipeline. Dispatch
+is a plain function over a vec of cstrs (no `argv` access) so every command is
+unit-testable by exit code. Exit codes: `0` ok, `1` operational error, `2` usage.
+See [ADR 0003](../adr/0003-cli-surface.md).
 
 ## Data Flow
 
@@ -98,7 +99,8 @@ magic-less v7 tarballs (real GNU release tarballs) extract
 mechanisms extract — POSIX.1-2001 **PAX** (`x`/`g`: `path`/`linkpath`/`size`)
 and **GNU** `L`/`K` long-name headers — each applied through the same
 path-traversal guard ([ADR 0009](../adr/0009-pax-extended-headers.md)). The full
-real-world matrix is covered: ustar + v7 + PAX + GNU, across gz/xz/bz2. Network download stays in 0.9.x; the safety model is in
+real-world matrix is covered: ustar + v7 + PAX + GNU, across gz/xz/bz2. The
+extraction safety model is in
 [ADR 0002](../adr/0002-source-extraction-safety.md).
 
 ### Build execution (`src/build.cyr`)
@@ -115,10 +117,11 @@ root, no setuid helper (the privilege boundary is downstream in ark/shakti).
 step runs through the **sandbox** (`src/sandbox.cyr`, `exec_vec_sandboxed`): a
 fresh **network namespace** (unprivileged user-namespace + identity uid/gid map;
 hermetic — no build-time network), **Landlock filesystem confinement** (writes
-restricted to `/tmp` + `/dev`, so `$PKG`/DESTDIR works while the rest of the
-filesystem is read-only to the step), and a **wall-clock timeout** (process-group
-`SIGKILL` on overrun). Isolation/confinement are best-effort + probed/reported;
-the timeout always applies. seccomp is a later bite. See
+restricted to the **build root** + existing `/dev` nodes, with `TMPDIR` pointed
+inside it, so the rest of the filesystem is read-only to the step), and a
+**wall-clock timeout** (process-group `SIGKILL` on overrun). Isolation/
+confinement are best-effort + probed/reported (or fail-closed with
+`--require-sandbox`); the timeout always applies. seccomp is a post-1.0 bite. See
 [ADR 0011](../adr/0011-build-sandbox.md) + [ADR 0012](../adr/0012-landlock-fs-confinement.md). Before the build steps,
 `apply_patches(recipe, cwd, patch_dir)` applies the recipe's `source.patches`
 (in order) to the extracted source root by shelling out to the system `patch`
@@ -153,11 +156,12 @@ strings. Handles deduplication: `FullRelro` implies both `-z,relro` and
 
 ## Dependencies
 
-| Crate | Purpose |
-|-------|---------|
-| `anyhow` | Error handling with context |
-| `chrono` | Build timestamps |
-| `serde` + `serde_json` | Serialization for all types |
-| `sha2` | SHA-256 integrity hashing |
-| `bayan` (stdlib) | Recipe file parsing — `cyml_parse` splits header/body, `toml_parse` parses the header (absorbed into stdlib `bayan` as of 0.8.1; formerly vendored `lib/cyml.cyr` + `lib/toml.cyr`) |
-| `tracing` | Structured logging |
+Pure Cyrius; no third-party dependencies — only vendored stdlib modules:
+
+| Module | Purpose |
+|--------|---------|
+| `bayan` | Recipe parsing — `cyml_parse` splits header/body, `toml_parse` parses the header |
+| `sandhi` | HTTPS source download (HTTP/1.1+2, native TLS, streaming to disk) |
+| `sankoch` | Decompression (gzip / xz / bzip2) + DEFLATE for the `.ark` data section |
+| `sigil` | SHA-256 (`sha256_digest`), ed25519 signing/verify, hex |
+| `chrono` (stdlib) | Build timestamps (`clock_epoch_secs`) |

@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.0.0] - 2026-06-17
+
+First stable release. takumi builds `.ark` packages from CYML recipes for AGNOS:
+a complete, hardened, reproducible, signed build pipeline. No functional change
+since 0.11.6 — this is the 1.0 milestone (version + a documentation sweep);
+toolchain pinned to Cyrius 6.2.20.
+
+### Milestone — all v1.0 criteria met
+
+- **Builds real packages end to end**: parse → fetch (HTTPS, streaming, native
+  TLS) → verify (SHA-256 hard gate) → extract (tar `ustar`/`v7`/PAX/GNU over
+  gz/xz/bz2, path-traversal-guarded) → patch → **sandboxed** build (unprivileged
+  network namespace + Landlock filesystem confinement + wall-clock timeout) →
+  package (reproducible `.ark`, **ed25519-signed**). Demonstrated on real
+  autotools/C builds; `build --execute --keep-going` drives a whole recipe set.
+- **Reproducible** builds (`SOURCE_DATE_EPOCH`): same recipe + sources → byte-
+  identical `.ark`. **Integrity** (SHA-256 root + per-file) and **authenticity**
+  (ed25519 via `--signing-key`). Build order over the full dependency graph.
+- **Documentation**: architecture overview, guides (building packages, base-
+  system runbook), worked examples, 14 ADRs, and a completed pre-v1 security
+  audit (`docs/compliance/security-audit-2026.md`).
+- **Pre-v1 security audit fully remediated** (0.11.1 review → 0.11.2–0.11.5
+  fixes): all critical/high/medium/low findings closed; one documented
+  trusted-recipe residual (PID-namespace timeout escape, SEC-11).
+- Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny); 884 tests; benchmark
+  suite over the hot paths.
+
+### Summary of the 0.8 → 1.0 arc
+
+Source extraction + `.ark` format/signing (0.8.x) → CLI + recipe source model +
+build execution + HTTPS source download + build cwd (0.9.x) → patch application,
+v7/PAX/GNU tar, streaming download, build sandbox (network/Landlock/timeout),
+real-package builds, full-graph order + reproducibility + guides (0.10.x) →
+base-system driver, security audit + remediation, package signing (0.11.x).
+
 ## [0.11.6] - 2026-06-17
 
 Toolchain bump + pre-v1 confirmation pass. No behavior change.

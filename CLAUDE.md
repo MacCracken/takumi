@@ -5,11 +5,11 @@
 **Takumi** (Japanese: 匠 — master craftsman) — Package build system for AGNOS (.ark packages from CYML recipes). CYML is TOML-header + markdown-body in one file — structured recipe metadata above `---`, prose build notes / maintainer commentary below.
 
 - **Type**: Binary
-- **Language**: Cyrius (toolchain pinned to 5.5.23). Rust reference remains
-  under `rust-old/` during the port and is authoritative until feature
-  parity is reached.
+- **Language**: Cyrius (toolchain pinned in `cyrius.cyml`; currently 6.2.20).
+  The original Rust implementation is preserved under `rust-old/` as a
+  historical reference — the Cyrius port reached feature parity and shipped 1.0.
 - **License**: GPL-3.0-only
-- **Version**: SemVer 0.8.0 (source of truth: `VERSION` → mirrored in `cyrius.cyml` and in the builder stamp in `src/package.cyr`; bumped from 0.1.0 on the Cyrius port to synchronize with ark 0.8.0)
+- **Version**: SemVer 1.0.0 (source of truth: `VERSION` → mirrored in `cyrius.cyml` `version =` and in the builder stamp in `src/package.cyr`, plus `takumi_version()` in `src/cli.cyr`; the recipe in zugot also tracks it)
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Philosophy**: [AGNOS Philosophy & Intention](https://github.com/MacCracken/agnosticos/blob/main/docs/philosophy.md)
 - **First-party standards**: [First-Party Application Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
@@ -17,7 +17,7 @@
 
 ## Consumers
 
-ark (builds packages from zugot recipes). Takumi reads `.cyml` recipes from the zugot repo (parsed via `lib/cyml.cyr` → `lib/toml.cyr` on the header) and produces .ark packages for installation.
+ark (builds packages from zugot recipes). Takumi reads `.cyml` recipes from the zugot repo (parsed via stdlib `bayan` — `cyml_parse` splits header/body, `toml_parse` parses the header) and produces .ark packages for installation.
 
 ## Development Process
 
