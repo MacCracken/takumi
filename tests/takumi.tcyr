@@ -1682,7 +1682,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.11.4"), "builder stamp is takumi/0.11.4");
+    assert(streq(man_builder(cam_m), "takumi/0.11.5"), "builder stamp is takumi/0.11.5");
 
     test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
     # strict decimal parse: value, or -1 on empty/null/non-digit.
@@ -2690,7 +2690,7 @@ fn main() {
     assert_eq(cmd_list(cli_dir), 0, "list dir -> 0");
     assert_eq(cmd_list("/tmp/takumi-cli-does-not-exist"), 1, "list missing dir -> 1");
     assert_eq(cmd_order(cli_dir), 0, "order dir -> 0");
-    assert_eq(cmd_build(cli_dir, 0, 0, 0), 2, "build dir (dry-run) -> 2");
+    assert_eq(cmd_build(cli_dir, 0, 0, 0, 0), 2, "build dir (dry-run) -> 2");
     # via dispatch too
     assert_eq(cli_dispatch(pkg_vec("order", cli_dir, 0, 0, 0, 0)), 0, "dispatch order -> 0");
     assert_eq(cli_dispatch(pkg_vec("build", cli_dir, 0, 0, 0, 0)), 2, "dispatch build -> 2");
@@ -2710,14 +2710,43 @@ fn main() {
     var rmlb = vec_new();
     vec_push(rmlb, "/bin/rm"); vec_push(rmlb, "-rf"); vec_push(rmlb, "/tmp/takumi-build");
     exec_vec(rmlb);
-    assert_eq(cmd_build(loc_dir, 1, 0, 0), 0, "build --execute (local) -> 0");
+    assert_eq(cmd_build(loc_dir, 1, 0, 0, 0), 0, "build --execute (local) -> 0");
     exec_vec(rmlb);
     # --keep-going over the same local dir: still succeeds (nothing fails), exit 0.
-    assert_eq(cmd_build(loc_dir, 1, 1, 0), 0, "build --execute --keep-going (local) -> 0");
+    assert_eq(cmd_build(loc_dir, 1, 1, 0, 0), 0, "build --execute --keep-going (local) -> 0");
     exec_vec(rmlb);
     # via dispatch with the -k flag.
     assert_eq(cli_dispatch(pkg_vec("build", loc_dir, "--execute", "--keep-going", 0, 0)), 0, "dispatch build -x -k -> 0");
     exec_vec(rmlb);
+
+    # Signing (SEC-02): the loader rejects malformed keys; a valid key produces a
+    # SIGNED .ark; no key produces an unsigned one.
+    assert_eq(_cli_load_signing_seed("/tmp/takumi-nonexistent-key"), 0, "missing key file -> 0");
+    var badk = "/tmp/takumi-badkey";
+    assert(file_write_all(badk, "abc123", 6) > 0, "write short key");
+    assert_eq(_cli_load_signing_seed(badk), 0, "short key -> 0");
+    assert(file_write_all(badk, "ZZ112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", 64) > 0, "write non-hex key");
+    assert_eq(_cli_load_signing_seed(badk), 0, "non-hex key -> 0");
+    var goodk = "/tmp/takumi-goodkey";
+    # 64 lowercase hex + trailing newline (trimmed).
+    assert(file_write_all(goodk, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", 65) > 0, "write valid key");
+    assert(_cli_load_signing_seed(goodk) != 0, "valid hex64 key -> 32-byte seed");
+    # a bad --signing-key fails the build (never silently unsigned).
+    exec_vec(rmlb);
+    assert_eq(cmd_build(loc_dir, 1, 0, 0, "/tmp/takumi-nonexistent-key"), 1, "build with invalid signing key -> 1");
+    # a valid key produces a signed package.
+    exec_vec(rmlb);
+    assert_eq(cmd_build(loc_dir, 1, 0, 0, goodk), 0, "build --execute with signing key -> 0");
+    var sapk2 = ark_read("/tmp/takumi-build/out/metapkg.ark", 1048576);
+    assert(sapk2 != 0, "signed package reads + verifies");
+    assert(apk_signature(sapk2) != 0, "package is SIGNED (has a signature)");
+    # without a key, the package is unsigned.
+    exec_vec(rmlb);
+    assert_eq(cmd_build(loc_dir, 1, 0, 0, 0), 0, "build --execute no key -> 0");
+    var uapk2 = ark_read("/tmp/takumi-build/out/metapkg.ark", 1048576);
+    assert_eq(apk_signature(uapk2), 0, "package without a key is unsigned");
+    exec_vec(rmlb);
+    sys_unlink(badk); sys_unlink(goodk);
     sys_unlink("/tmp/takumi-cli-local/meta.cyml");
     sys_rmdir(loc_dir);
 

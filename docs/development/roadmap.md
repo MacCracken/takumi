@@ -210,9 +210,11 @@ runbook; sandbox extras are audit-informed.)
   content region before use (`_ark_in`), `u_len` capped at `ARK_MAX_DATA`, allocs
   null-checked (SEC-05 HIGH); manifest ints clamped non-negative (SEC-16). 871
   tests; malformed-`.ark` regression test added.
-- **0.11.5 — Package signing / key management** (audit cluster): supply a
-  signing key (SEC-02 CRITICAL) via `--signing-key`, fail-closed-or-warn when
-  absent; likely its own ADR.
+- [x] **0.11.5 — Package signing / key management** (audit cluster). **Done.**
+  `--signing-key <path>` (64-hex ed25519 seed) threaded into `ark_write`;
+  fail-closed on a bad key, loud UNSIGNED warning when absent (SEC-02 CRITICAL).
+  Signed `.ark`s verify on read. [ADR 0014](../adr/0014-package-signing-key.md).
+  **All audit findings now remediated — the 0.11.x security arc is complete.**
 
 - **1.0.0 — v1 release**: all eight criteria ✅, audit findings resolved or
   risk-accepted, final docs/CHANGELOG/version pass, tag 1.0.0.
@@ -238,10 +240,9 @@ Status: ✅ met · ◐ partial · ☐ open.
    (535 packages) in integration (0.9.9).
 6. ✅ Documentation complete: architecture, guides, examples, ADRs — guides +
    examples landed in 0.9.9 (11 ADRs, architecture overview, roadmap).
-7. ◐ Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) ✅ and a
-   completed pre-v1 security audit ◐ — the **audit itself is done** (0.11.1,
-   [security-audit-2026.md](../compliance/security-audit-2026.md): 22 findings).
-   Remediation of the 2 critical + 3 high + medium findings runs in 0.11.2–0.11.5
-   before 1.0; no critical/high is accepted as residual.
+7. ✅ Clean `cyrius audit` (fmt + lint 0 warnings + vet + deny) and a completed
+   pre-v1 security audit — audit done (0.11.1,
+   [security-audit-2026.md](../compliance/security-audit-2026.md): 22 findings)
+   and **fully remediated** across 0.11.2–0.11.5 (SEC-11 a documented residual).
 8. ✅ Benchmark suite covers all hot paths (extract gz/xz/bz2, sha256,
    ark_write, flags).

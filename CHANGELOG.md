@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.5] - 2026-06-17
+
+Security remediation, cluster 4 (final) — **package signing**. Closes the last
+audit finding (SEC-02, CRITICAL); **the pre-v1 security audit is now fully
+remediated**. 884 tests (was 871). See
+[security-audit-2026.md](docs/compliance/security-audit-2026.md).
+
+### Security
+
+- **SEC-02 (CRITICAL) — packages are now signed.** The build called
+  `ark_write(…, 0)` (seed 0 → unsigned), so every package had integrity but **no
+  authenticity**. New **`--signing-key <path>`** supplies the ed25519 seed (64
+  lowercase hex; trailing whitespace trimmed), validated and threaded into
+  `ark_write`. **Fail-closed on a bad key** (`--signing-key` given but
+  missing/malformed → build fails, never silently unsigned); **loud warning when
+  absent** (`WARNING: no --signing-key; produced packages will be UNSIGNED`) so
+  the unsigned state is never silent. Signed `.ark`s verify on read (root hash +
+  ed25519 + per-file hashes). Model in
+  [ADR 0014](docs/adr/0014-package-signing-key.md).
+
+### Added
+
+- Tests (+13): `_cli_load_signing_seed` (missing / short / non-hex → rejected;
+  valid hex64 → 32-byte seed); end-to-end signed (`apk_signature != 0`) vs
+  unsigned vs bad-key-fails-the-build.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.11.5. **All audit findings resolved**
+  (SEC-11 documented residual) → v1.0 criterion 7 met.
+
 ## [0.11.4] - 2026-06-17
 
 Security remediation, cluster 3 — **`.ark` reader robustness**. Closes the

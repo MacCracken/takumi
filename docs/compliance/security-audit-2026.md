@@ -1,11 +1,13 @@
 # takumi — Pre-v1 Security Audit (2026)
 
-- **Status**: COMPLETE (review); remediation tracked in §7 (0.11.2+)
-- **Date**: 2026-06-17 (0.11.1)
-- **Scope version**: 0.11.0
+- **Status**: COMPLETE — review (0.11.1) + **all remediation landed (0.11.2–0.11.5)**
+- **Date**: 2026-06-17 (review 0.11.1; remediation through 0.11.5)
+- **Scope version**: 0.11.0 (remediated through 0.11.5)
 - **Auditor**: internal review (per CLAUDE.md P(-1) / v1.0 criterion 7)
-- **Result**: 22 findings — 2 critical, 3 high, 6 medium, 6 low, 5 info. No
-  critical/high accepted as residual; all scheduled for 0.11.2–0.11.5 before 1.0.
+- **Result**: 22 findings — 2 critical, 3 high, 6 medium, 6 low, 5 info.
+  **Every critical/high/medium/low is fixed** (SEC-11 documented as an accepted
+  trusted-recipe residual); the 5 info items are confirmed-solid or optional.
+  No critical/high accepted as residual. v1.0 criterion 7 is met.
 
 > This is the pre-v1 security audit required by v1.0 criterion 7. It reviews the
 > whole build pipeline against takumi's threat model, records findings with
@@ -83,7 +85,7 @@ consumer.
 | ID | Area | Title | Severity | Disposition |
 |----|------|-------|----------|-------------|
 | SEC-01 | extract | PAX `size=` decimal overflow → bounds bypass → OOB heap read into output file | **CRITICAL** | **Fixed ✅ 0.11.2** |
-| SEC-02 | sign | Packages produced **unsigned** (`signing_seed = 0`) — no authenticity | **CRITICAL** | Fix 0.11.x (key mgmt) |
+| SEC-02 | sign | Packages produced **unsigned** (`signing_seed = 0`) — no authenticity | **CRITICAL** | **Fixed ✅ 0.11.5** |
 | SEC-03 | extract | PAX record-length overflow → negative index → OOB heap-underflow read (DoS) | HIGH | **Fixed ✅ 0.11.2** |
 | SEC-04 | sandbox | userns uid/gid-map write failures ignored → silent `nobody` ownership / half-sandbox | HIGH | **Fixed ✅ 0.11.3** |
 | SEC-05 | format | `.ark` reader trusts length/offset fields unbounded → OOB/OOM in the consumer | HIGH | **Fixed ✅ 0.11.4** |
@@ -273,12 +275,16 @@ CRITICALs lead.
   bomb OOM in the consumer), SEC-16 (manifest ints clamped non-negative on
   read). Regression test: a hash-valid but oversized-manifest-length `.ark` is
   rejected (0), not OOB-read.
-- **0.11.5 — package signing / key management** (CRITICAL): SEC-02 — a signing
-  key surface (`--signing-key`), length-validated, fail-closed-or-warn when
-  absent; likely its own ADR.
+- **0.11.5 — package signing / key management — DONE ✅**: SEC-02 —
+  `--signing-key <path>` (64-hex ed25519 seed) threaded into `ark_write`;
+  fail-closed on a bad key, loud UNSIGNED warning when absent. Signed `.ark`s
+  verify on read. [ADR 0014](../adr/0014-package-signing-key.md).
 - INFO items (SEC-17/18) optional; SEC-19…22 require no change.
-- **1.0.0** — tagged once all CRITICAL/HIGH/MEDIUM findings are resolved or
-  explicitly risk-accepted here, with the residual statement (§6) final.
+- **1.0.0** — all CRITICAL/HIGH/MEDIUM/LOW findings resolved (SEC-11 documented
+  residual); ready to tag.
+
+**Remediation complete (0.11.5).** All 16 actionable findings are fixed; SEC-11
+is an accepted documented residual; the 5 INFO items need no change.
 
 This sequence supersedes the earlier "0.11.x remediation (TBD clusters)" note in
 the roadmap's Path-to-1.0.
