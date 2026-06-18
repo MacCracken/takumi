@@ -107,3 +107,14 @@ Key choices and rationale:
   the `compress_algo` byte.
 - **Signing deferred to 0.9.x** — rejected; signing is part of the
   integrity surface we want settled before the security audit.
+
+## Amendment (0.11.4, audit SEC-05 / SEC-16)
+
+`ark_read` now treats a `.ark` as untrusted input (the `ark` consumer reads
+packages it did not produce). Every manifest/index/data length, offset, and
+count is validated against the root-hash-verified content region `[0, r)` before
+any `str_new`/`memcpy`/`alloc` (`_ark_in`, overflow-safe); the declared
+uncompressed data size is capped at `ARK_MAX_DATA` (256 MiB) to bound a
+decompression bomb, and every allocation is null-checked. Manifest integers are
+clamped non-negative. A malformed package is rejected (return 0), never an
+out-of-bounds read or OOM.

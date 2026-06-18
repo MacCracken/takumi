@@ -205,8 +205,11 @@ runbook; sandbox extras are audit-informed.)
   fork timeout escape) documented as a trusted-recipe residual (PID ns
   deferred). Sandbox policy refactored to an `SbCfg` struct. 868 tests; verified
   live. seccomp deferred post-1.0.
-- **0.11.4 — `.ark` reader robustness** (audit cluster): bounded/validated
-  parsing of untrusted packages (SEC-05 HIGH, SEC-16).
+- [x] **0.11.4 — `.ark` reader robustness** (audit cluster). **Done.** Every
+  length/offset/count in `ark_read` is bounds-checked against the verified
+  content region before use (`_ark_in`), `u_len` capped at `ARK_MAX_DATA`, allocs
+  null-checked (SEC-05 HIGH); manifest ints clamped non-negative (SEC-16). 871
+  tests; malformed-`.ark` regression test added.
 - **0.11.5 — Package signing / key management** (audit cluster): supply a
   signing key (SEC-02 CRITICAL) via `--signing-key`, fail-closed-or-warn when
   absent; likely its own ADR.

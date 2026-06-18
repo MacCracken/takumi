@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.4] - 2026-06-17
+
+Security remediation, cluster 3 — **`.ark` reader robustness**. Closes the
+audit's HIGH parser finding + a low; the reader is now safe against malformed/
+hostile packages (relevant to the `ark` consumer). 871 tests (was 868). See
+[security-audit-2026.md](docs/compliance/security-audit-2026.md).
+
+### Security
+
+- **SEC-05 (HIGH) — bounded `.ark` parsing** (`src/ark_format.cyr`). `ark_read`
+  previously trusted every length/offset/count field, so a malformed package
+  could drive an out-of-bounds read (`str_new`/`memcpy` past the buffer) or an
+  OOM-sized `alloc(u_len)`. Now a new `_ark_in(off, len, r)` bounds check (
+  overflow-safe; against the root-hash-verified content region `[0, r)`) gates
+  **every** field read — manifest length, index count, per-entry path/sha/
+  linkpath/size/offset, and the data block. `u_len` is additionally capped at
+  `ARK_MAX_DATA` (256 MiB) and every `alloc` is null-checked. Any violation
+  returns 0 (malformed), never reads OOB.
+- **SEC-16 (LOW)** — manifest ints (`release` / `size_installed` / `build_date`)
+  are clamped non-negative on read (`_man_uint`), so a hostile manifest can't
+  feed a consumer a negative value.
+
+### Added
+
+- Regression test: a hash-valid but structurally-malformed `.ark` (manifest
+  length far past the buffer, re-hashed so it passes the root-hash gate) is
+  **rejected (0), not OOB-read**.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.11.4. Only the SEC-02 CRITICAL (package
+  signing) remains open from the audit → 0.11.5.
+
 ## [0.11.3] - 2026-06-17
 
 Security remediation, cluster 2 — **sandbox hardening**. Closes the audit's

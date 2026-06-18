@@ -1682,7 +1682,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.11.3"), "builder stamp is takumi/0.11.3");
+    assert(streq(man_builder(cam_m), "takumi/0.11.4"), "builder stamp is takumi/0.11.4");
 
     test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
     # strict decimal parse: value, or -1 on empty/null/non-digit.
@@ -1956,6 +1956,31 @@ fn main() {
     var uapk = ark_read("/tmp/takumi-ark-unsigned.ark", 1048576);
     assert(uapk != 0, "unsigned read+verify -> non-zero");
     assert_eq(apk_signature(uapk), 0, "unsigned package has no signature");
+
+    test_group("ark_read: malformed length rejected, not OOB (SEC-05)");
+    # Take the valid unsigned .ark, corrupt the manifest length to far exceed the
+    # buffer, and re-hash [0, r) so it passes the root-hash gate and reaches the
+    # parser. Without the bounds checks this str_new()s ~4 GB past the buffer; with
+    # them it is rejected cleanly (0).
+    var mbuf = alloc(1048576);
+    var mflen = file_read_all("/tmp/takumi-ark-unsigned.ark", mbuf, 1048576);
+    assert(mflen > 0, "read the valid unsigned .ark");
+    var mr = mflen - 33;                 # unsigned trailer = 32 root + 1 has_sig
+    var huge = 4000000000;               # >> buffer + content region
+    store8(mbuf + 16, huge & 0xFF);      # mlen u32 LE at offset ARK_HEADER_LEN(16)
+    store8(mbuf + 17, (huge >> 8) & 0xFF);
+    store8(mbuf + 18, (huge >> 16) & 0xFF);
+    store8(mbuf + 19, (huge >> 24) & 0xFF);
+    sha256_global_init();
+    var mctx = sha256_init();
+    sha256_update(mctx, mbuf, mr);
+    var mdg = alloc(32);
+    sha256_finalize(mctx, mdg);
+    fl_free(mctx);
+    memcpy(mbuf + mr, mdg, 32);          # valid root hash over the corrupted content
+    assert(file_write_all("/tmp/takumi-ark-malformed.ark", mbuf, mflen) > 0, "write malformed .ark");
+    assert_eq(ark_read("/tmp/takumi-ark-malformed.ark", 1048576), 0, "oversized manifest len -> rejected (0)");
+    sys_unlink("/tmp/takumi-ark-malformed.ark");
 
     test_group("ark_write/ark_read: empty package (no files)");
     var emp_man = create_ark_manifest(ark_recipe, vec_new(), "x86_64", 1700000000);

@@ -43,6 +43,11 @@ enum ArkFmt {
     # single-threaded sankoch codec version) keeps output byte-identical.
     ARK_COMPRESS_LEVEL = 6;
     ARK_HEADER_LEN = 16;
+    # Cap on a `.ark`'s declared uncompressed data size when reading an
+    # untrusted package — a malicious header could declare a huge `u_len`
+    # (decompression bomb) with a tiny compressed body. 256 MiB = the allocator
+    # ceiling (lib/alloc.cyr ALLOC_MAX). (SEC-05)
+    ARK_MAX_DATA = 268435456;
 }
 
 # --- little-endian writers (append to a str_builder) ------------------
@@ -82,6 +87,17 @@ fn _get_u8(buf, off) { return load8(buf + off) & 0xFF; }
 fn _get_u16(buf, off) { return _get_u8(buf, off) | (_get_u8(buf, off + 1) << 8); }
 fn _get_u32(buf, off) { return _get_u16(buf, off) | (_get_u16(buf, off + 2) << 16); }
 fn _get_u64(buf, off) { return _get_u32(buf, off) | (_get_u32(buf, off + 4) << 32); }
+
+# Bounds check for the reader: true iff a field of `len` bytes at `off` lies
+# within the verified content region [0, r). Overflow-safe — never computes
+# `off + len` (which could wrap); requires off/len >= 0 (SEC-05).
+fn _ark_in(off, len, r) {
+    if (off < 0) { return 0; }
+    if (len < 0) { return 0; }
+    if (off > r) { return 0; }
+    if (len > r - off) { return 0; }
+    return 1;
+}
 
 # --- canonical manifest TOML serialization ----------------------------
 
@@ -214,15 +230,24 @@ fn _man_get_arr(pairs, key) {
     return out;
 }
 
+# Read a non-negative manifest integer from an untrusted .ark; a negative value
+# falls back to `dflt` so a hostile manifest can't feed a consumer a negative
+# release / size / date (SEC-16).
+fn _man_uint(pairs, key, dflt) {
+    var v = _get_int(pairs, key, dflt);
+    if (v < 0) { return dflt; }
+    return v;
+}
+
 fn _man_from_pairs(pairs) {
     var m = man_alloc();
     man_set_name(m, _man_get_str(pairs, "name"));
     man_set_version(m, _man_get_str(pairs, "version"));
-    man_set_release(m, _get_int(pairs, "release", 1));
+    man_set_release(m, _man_uint(pairs, "release", 1));
     man_set_description(m, _man_get_str(pairs, "description"));
     man_set_arch(m, _man_get_str(pairs, "arch"));
-    man_set_size_installed(m, _get_int(pairs, "size_installed", 0));
-    man_set_build_date(m, _get_int(pairs, "build_date", 0));
+    man_set_size_installed(m, _man_uint(pairs, "size_installed", 0));
+    man_set_build_date(m, _man_uint(pairs, "build_date", 0));
     man_set_builder(m, _man_get_str(pairs, "builder"));
     man_set_source_url(m, _man_get_str(pairs, "source_url"));
     man_set_source_hash(m, _man_get_str(pairs, "source_hash"));
@@ -459,10 +484,14 @@ fn ark_read(path_cstr, max_len) {
         sig_hex = hex_encode(sig, 64);
     }
 
-    # Manifest.
+    # Manifest. Every length/offset is validated against the content region
+    # [0, r) before use — a malformed/hostile .ark must never drive an OOB read
+    # or an oversized alloc (SEC-05).
     var off = ARK_HEADER_LEN;
+    if (_ark_in(off, 4, r) != 1) { return 0; }
     var mlen = _get_u32(buf, off);
     off = off + 4;
+    if (_ark_in(off, mlen, r) != 1) { return 0; }
     var mstr = str_new(buf + off, mlen);
     off = off + mlen;
     var sections = toml_parse(mstr);
@@ -471,47 +500,63 @@ fn ark_read(path_cstr, max_len) {
     var manifest = _man_from_pairs(pairs);
 
     # File index.
+    if (_ark_in(off, 4, r) != 1) { return 0; }
     var count = _get_u32(buf, off);
     off = off + 4;
     var entries = vec_new();
     var i = 0;
     while (i < count) {
+        if (_ark_in(off, 6, r) != 1) { return 0; }   # ft + eflags + plen
         var ft = _get_u8(buf, off); off = off + 1;
         var eflags = _get_u8(buf, off); off = off + 1;
         var plen = _get_u32(buf, off); off = off + 4;
+        if (_ark_in(off, plen, r) != 1) { return 0; }
         var path = alloc(plen + 1);
         memcpy(path, buf + off, plen);
         store8(path + plen, 0);
         off = off + plen;
+        if (_ark_in(off, 8, r) != 1) { return 0; }
         var size = _get_u64(buf, off); off = off + 8;
         var sha_hex = "";
         if ((eflags & 1) != 0) {
+            if (_ark_in(off, 32, r) != 1) { return 0; }
             sha_hex = hex_encode(buf + off, 32);
             off = off + 32;
         }
         var target = 0;
         if ((eflags & 2) != 0) {
+            if (_ark_in(off, 4, r) != 1) { return 0; }
             var tlen = _get_u32(buf, off); off = off + 4;
+            if (_ark_in(off, tlen, r) != 1) { return 0; }
             target = alloc(tlen + 1);
             memcpy(target, buf + off, tlen);
             store8(target + tlen, 0);
             off = off + tlen;
         }
+        if (_ark_in(off, 8, r) != 1) { return 0; }
         var doff = _get_u64(buf, off); off = off + 8;
         vec_push(entries, afe_new(path, sha_hex, size, ft, target));
         i = i + 1;
     }
 
     # Data block.
+    if (_ark_in(off, 16, r) != 1) { return 0; }
     var u_len = _get_u64(buf, off); off = off + 8;
     var c_len = _get_u64(buf, off); off = off + 8;
+    if (u_len < 0 || u_len > ARK_MAX_DATA) { return 0; }   # bomb / overflow guard
     var data = 0;
     if (u_len > 0) {
-        data = alloc(u_len);
         if (compressed != 0) {
+            # the compressed bytes must lie within the content region
+            if (_ark_in(off, c_len, r) != 1) { return 0; }
+            data = alloc(u_len);
+            if (data == 0) { return 0; }
             var n = deflate_decompress(buf + off, c_len, data, u_len);
             if (n != u_len) { return 0; }
         } else {
+            if (_ark_in(off, u_len, r) != 1) { return 0; }
+            data = alloc(u_len);
+            if (data == 0) { return 0; }
             memcpy(data, buf + off, u_len);
         }
     }
