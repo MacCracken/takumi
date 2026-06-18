@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.6] - 2026-06-17
+
+Toolchain bump + pre-v1 confirmation pass. No behavior change.
+
+### Changed
+
+- **Toolchain pin → Cyrius 6.2.20** (was 6.2.19); re-vendored `lib/` (sandhi
+  1.6.5 → 1.6.7). Build is drift-free; the streaming-download API takumi uses is
+  unchanged.
+- Builder stamp + `takumi_version()` → 0.11.6.
+
+### Verified
+
+- Full gate green on 6.2.20: build OK · 884 tests · fmt/lint(0)/doc/vet/deny
+  clean · integration PASS (fetch / patch / PAX / GNU / sandbox / signing /
+  keep-going / reproducible) · benchmarks flat. **All 8 v1.0 criteria met and
+  the security audit fully remediated — ready to tag 1.0.0.**
+
 ## [0.11.5] - 2026-06-17
 
 Security remediation, cluster 4 (final) — **package signing**. Closes the last
