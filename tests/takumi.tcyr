@@ -453,9 +453,15 @@ fn main() {
     assert_eq(name_has_only_allowed_chars("hel lo"), 0, "space rejected");
     assert_eq(name_has_only_allowed_chars("hel/lo"), 0, "slash rejected");
 
-    test_group("url_has_valid_scheme");
-    assert_eq(url_has_valid_scheme("http://example.com/x.tar.gz"), 1, "http ok");
+    test_group("url_has_valid_scheme (https-only + loopback http carve-out, SEC-06)");
     assert_eq(url_has_valid_scheme("https://example.com/x.tar.gz"), 1, "https ok");
+    assert_eq(url_has_valid_scheme("http://example.com/x.tar.gz"), 0, "remote http rejected");
+    # plaintext http allowed only to a loopback host (never leaves the machine)
+    assert_eq(url_has_valid_scheme("http://127.0.0.1:8097/x.tar.gz"), 1, "loopback http ok (127.0.0.1:port)");
+    assert_eq(url_has_valid_scheme("http://localhost/x"), 1, "loopback http ok (localhost)");
+    assert_eq(url_has_valid_scheme("http://[::1]:9/x"), 1, "loopback http ok ([::1])");
+    assert_eq(url_has_valid_scheme("http://127.0.0.1.evil.com/x"), 0, "loopback-prefix spoof rejected");
+    assert_eq(url_has_valid_scheme("http://localhostx/x"), 0, "localhost-prefix spoof rejected");
     assert_eq(url_has_valid_scheme("ftp://example.com/x"), 0, "ftp rejected");
     assert_eq(url_has_valid_scheme("file:///etc/passwd"), 0, "file rejected");
     assert_eq(url_has_valid_scheme(""), 0, "empty rejected");
@@ -1287,13 +1293,13 @@ fn main() {
     assert_eq(val_ok(v_nosha), 0, "rejected");
     assert_eq(_has_error(v_nosha, "recipe has empty source sha256"), 1, "specific message");
 
-    test_group("validate_recipe: malformed sha256 -> warning (not fatal)");
+    test_group("validate_recipe: malformed sha256 -> error (SEC-07)");
     var v_shortsha = validate_recipe(recipe_new(
         _valid_pkg(),
         src_new("https://x/y", "abc123", vec_new()),
         _valid_dep(), _valid_bld(), _valid_sec()));
-    assert_eq(val_ok(v_shortsha), 1, "still valid (placeholder sha tolerated)");
-    assert_eq(_has_warning(v_shortsha, "source sha256 is not a valid lowercase 64-character hex digest"), 1, "warning present");
+    assert_eq(val_ok(v_shortsha), 0, "rejected (malformed sha is a hard error)");
+    assert_eq(_has_error(v_shortsha, "source sha256 is not a valid lowercase 64-character hex digest"), 1, "error present");
 
     test_group("validate_recipe: no build steps -> warning");
     var v_nobld = validate_recipe(recipe_new(
@@ -1676,7 +1682,7 @@ fn main() {
 
     test_group("create_ark_manifest: build_date + builder stamp");
     assert_eq(man_build_date(cam_m), 1713859200, "build_date passed through");
-    assert(streq(man_builder(cam_m), "takumi/0.11.1"), "builder stamp is takumi/0.11.1");
+    assert(streq(man_builder(cam_m), "takumi/0.11.2"), "builder stamp is takumi/0.11.2");
 
     test_group("resolve_build_epoch: SOURCE_DATE_EPOCH parsing");
     # strict decimal parse: value, or -1 on empty/null/non-digit.
@@ -2110,6 +2116,35 @@ fn main() {
     assert(_tb_write(pxbadsb, xarc) > 0, "write malicious PAX path fixture");
     assert_eq(extract_archive(xarc, xdest), 0 - SRC_ERR_UNSAFE_PATH, "PAX ../escape -> UNSAFE_PATH");
 
+    test_group("extract_archive: PAX overflow headers handled safely (SEC-01/03)");
+    # SEC-01: a huge `size=` must be rejected by the decimal overflow guard (not
+    # wrap negative + bypass the write bound); the file extracts at its real size.
+    sys_unlink("/tmp/takumi-extract-out/of.txt");
+    var o1rec = str_builder_new();
+    _tb_pax_record(o1rec, "size", "99999999999999999999");   # 20 digits -> overflow
+    var o1 = str_builder_new();
+    _tb_emit_pax(o1, 120, str_builder_build(o1rec));
+    _tb_emit_file(o1, "of.txt", 48, 3, "abc");
+    _tb_terminator(o1);
+    assert(_tb_write(o1, xarc) > 0, "write SEC-01 fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "PAX huge size ignored -> 0 (no overflow)");
+    var o1b = alloc(16);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/of.txt", o1b, 16), 3, "file at its real size 3");
+    assert_eq(memeq(o1b, "abc", 3), 1, "file content intact");
+    # SEC-03: a 20-digit record-length prefix must not yield a negative index/OOB;
+    # parsing stops cleanly and the following entry is unaffected.
+    sys_unlink("/tmp/takumi-extract-out/og.txt");
+    var o2rec = str_builder_new();
+    str_builder_add_cstr(o2rec, "99999999999999999999 path=x\n");
+    var o2 = str_builder_new();
+    _tb_emit_pax(o2, 120, str_builder_build(o2rec));
+    _tb_emit_file(o2, "og.txt", 48, 2, "ok");
+    _tb_terminator(o2);
+    assert(_tb_write(o2, xarc) > 0, "write SEC-03 fixture");
+    assert_eq(extract_archive(xarc, xdest), 0, "PAX bad record-length safe -> 0 (no OOB)");
+    var o2b = alloc(16);
+    assert_eq(file_read_all("/tmp/takumi-extract-out/og.txt", o2b, 16), 2, "following entry intact");
+
     test_group("extract_archive: PAX 'g' global header tolerated");
     sys_unlink("/tmp/takumi-extract-out/afterglobal.txt");
     var pgrec = str_builder_new();
@@ -2370,6 +2405,8 @@ fn main() {
     sys_unlink("/tmp/takumi-extract-out/sized.txt");
     sys_unlink("/tmp/takumi-extract-out/lnk2");
     sys_unlink("/tmp/takumi-extract-out/run.sh");
+    sys_unlink("/tmp/takumi-extract-out/of.txt");
+    sys_unlink("/tmp/takumi-extract-out/og.txt");
     sys_unlink("/tmp/takumi-extract-out/gnudir/a-long-gnu-name.txt");
     sys_unlink("/tmp/takumi-extract-out/shortname");
     sys_rmdir("/tmp/takumi-extract-out/gnudir");

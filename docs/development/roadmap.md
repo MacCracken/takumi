@@ -191,10 +191,12 @@ runbook; sandbox extras are audit-informed.)
   critical, 3 high, 6 medium, 6 low, 5 info)**, each verified against the code.
   Closes criterion 7's audit half. The critical/high set drives 0.11.2–0.11.5.
 
-- **0.11.2 — Input hardening** (audit cluster): PAX `size=`/record-length
-  overflow guards (SEC-01 CRITICAL, SEC-03 HIGH), https-only (SEC-06),
+- [x] **0.11.2 — Input hardening** (audit cluster). **Done.** PAX
+  `size=`/record-length overflow guards + overflow-safe write bound (SEC-01
+  CRITICAL, SEC-03 HIGH), https-only + loopback `http` carve-out (SEC-06),
   malformed-sha → error (SEC-07), GitHub URL re-validate (SEC-12), streaming
-  size cap (SEC-13), alloc-cap reconcile (SEC-14).
+  size cap via counting sink (SEC-13), `SRC_MAX_BYTES` = allocator ceiling +
+  null-checked allocs (SEC-14). Regression tests added; 859 tests green.
 - **0.11.3 — Sandbox hardening** (audit cluster): fail-closed userns maps
   (SEC-04 HIGH), surface Landlock apply-failure + `--require-sandbox` (SEC-08),
   confine writes to the build root not all `/tmp` (SEC-09), aarch64 timeout

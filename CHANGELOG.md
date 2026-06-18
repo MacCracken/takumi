@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.2] - 2026-06-17
+
+Security remediation, cluster 1 — **input hardening**. Closes the audit's two
+memory-safety findings in the tar parser (1 critical, 1 high) + four
+network/recipe-input findings. 859 tests (was 847). See
+[security-audit-2026.md](docs/compliance/security-audit-2026.md).
+
+### Security
+
+- **SEC-01 (CRITICAL) — PAX `size=` overflow** (`src/source.cyr`). `_pax_decimal`
+  now rejects values that would overflow i64 (guard before the `*10`), so a
+  crafted `size=` can't wrap negative and bypass the write bound. The write sink
+  is also made overflow-safe: reject `esize < 0`, bound via `esize > tar_len -
+  pos` (never compute `pos + esize`).
+- **SEC-03 (HIGH) — PAX record-length overflow.** `_pax_parse` guards the `rlen`
+  accumulation and breaks if `rec_end` would wrap below the record start — no
+  negative loop index / OOB read.
+- **SEC-06 (MEDIUM) — https-only.** `url_has_valid_scheme` now accepts `https://`
+  only, with a **loopback carve-out** for plaintext `http://` to `127.0.0.1` /
+  `localhost` / `[::1]` (local mirrors/tests; bytes never leave the host).
+  Loopback-prefix spoofs (`127.0.0.1.evil`) are rejected.
+- **SEC-07 (MEDIUM) — malformed sha256 is now an error** (was a warning), so a
+  bad digest is rejected at validation, not late at the fetch gate.
+- **SEC-12 (LOW)** — the GitHub-resolved `browser_download_url` is re-validated
+  (scheme) before download.
+- **SEC-13 (LOW)** — the streaming download is capped at `FETCH_MAX_ARTIFACT`
+  (256 MiB) via a counting sink (the buffered `max_response_bytes` doesn't apply
+  to the streaming path) — bounds a disk-exhaustion DoS.
+- **SEC-14 (LOW)** — `SRC_MAX_BYTES` lowered to the allocator ceiling (256 MiB)
+  so the cap is honest; the three extraction allocs are null-checked
+  (`SRC_ERR_TOO_LARGE`).
+
+### Added
+
+- Regression tests: PAX overflow headers (huge `size=`; 20-digit record length)
+  extract safely with no crash/OOB and the real entries intact; the https-only +
+  loopback-carve-out scheme matrix; malformed-sha-is-an-error.
+
+### Changed
+
+- Builder stamp + `takumi_version()` → 0.11.2. No critical/high findings remain
+  open from cluster 1; next is 0.11.3 (sandbox hardening).
+
 ## [0.11.1] - 2026-06-17
 
 Pre-v1 security audit (review only; no behavior change). Closes the audit half of

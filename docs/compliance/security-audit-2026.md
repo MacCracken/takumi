@@ -82,20 +82,20 @@ consumer.
 
 | ID | Area | Title | Severity | Disposition |
 |----|------|-------|----------|-------------|
-| SEC-01 | extract | PAX `size=` decimal overflow → bounds bypass → OOB heap read into output file | **CRITICAL** | Fix 0.11.2 |
+| SEC-01 | extract | PAX `size=` decimal overflow → bounds bypass → OOB heap read into output file | **CRITICAL** | **Fixed ✅ 0.11.2** |
 | SEC-02 | sign | Packages produced **unsigned** (`signing_seed = 0`) — no authenticity | **CRITICAL** | Fix 0.11.x (key mgmt) |
-| SEC-03 | extract | PAX record-length overflow → negative index → OOB heap-underflow read (DoS) | HIGH | Fix 0.11.2 |
+| SEC-03 | extract | PAX record-length overflow → negative index → OOB heap-underflow read (DoS) | HIGH | **Fixed ✅ 0.11.2** |
 | SEC-04 | sandbox | userns uid/gid-map write failures ignored → silent `nobody` ownership / half-sandbox | HIGH | Fix 0.11.3 |
 | SEC-05 | format | `.ark` reader trusts length/offset fields unbounded → OOB/OOM in the consumer | HIGH | Fix 0.11.x |
-| SEC-06 | fetch | `http://` accepted by the validator — contradicts the https-only invariant | MEDIUM | Fix 0.11.2 |
-| SEC-07 | validate | Malformed source `sha256` is a warning, not an error (builds late-fails) | MEDIUM | Fix 0.11.2 |
+| SEC-06 | fetch | `http://` accepted by the validator — contradicts the https-only invariant | MEDIUM | **Fixed ✅ 0.11.2** |
+| SEC-07 | validate | Malformed source `sha256` is a warning, not an error (builds late-fails) | MEDIUM | **Fixed ✅ 0.11.2** |
 | SEC-08 | sandbox | Landlock per-step apply failure is fail-open + unreported | MEDIUM | Fix 0.11.3 |
 | SEC-09 | sandbox | Landlock grants RW to **all** of `/tmp` (not the build root) + hidden `/tmp` coupling | MEDIUM | Fix 0.11.3 |
 | SEC-10 | sandbox | Poll sleep `syscall(7,…)` is not `poll` on aarch64 → busy-spin / wrong timeout | MEDIUM | Fix 0.11.3 |
 | SEC-11 | sandbox | Timeout escapable by a double-fork/`setsid` step (no PID namespace) | MEDIUM | Mitigate 0.11.3 (PID ns) / document |
-| SEC-12 | fetch | GitHub `browser_download_url` not re-validated (scheme/host) before fetch | LOW | Fix 0.11.2 |
-| SEC-13 | fetch | Streaming download has no byte cap → disk-exhaustion DoS (bounded only by timeout) | LOW | Fix 0.11.2 |
-| SEC-14 | extract | `SRC_MAX_BYTES` (512 MiB) > allocator `ALLOC_MAX` (256 MiB) — cap is a lie, misleading error | LOW | Fix 0.11.2 |
+| SEC-12 | fetch | GitHub `browser_download_url` not re-validated (scheme/host) before fetch | LOW | **Fixed ✅ 0.11.2** |
+| SEC-13 | fetch | Streaming download has no byte cap → disk-exhaustion DoS (bounded only by timeout) | LOW | **Fixed ✅ 0.11.2** |
+| SEC-14 | extract | `SRC_MAX_BYTES` (512 MiB) > allocator `ALLOC_MAX` (256 MiB) — cap is a lie, misleading error | LOW | **Fixed ✅ 0.11.2** |
 | SEC-15 | sandbox | `/dev` granted full RW incl. device/socket/FIFO creation (only `/dev/null`-class needed) | LOW | Fix 0.11.3 |
 | SEC-16 | format | `.ark` reader: manifest ints (`release`/`size_installed`/`build_date`) unvalidated on read | LOW | Fix 0.11.x |
 | SEC-17 | extract | Regular-file writes lack `O_NOFOLLOW` (write-through in-tree symlink) — contained by lexical guard | INFO | Optional hardening |
@@ -249,11 +249,13 @@ remediation before 1.0 (§7).
 Findings are clustered into bounded 0.11.x releases by area + severity. The two
 CRITICALs lead.
 
-- **0.11.2 — input hardening** (CRITICAL/MEDIUM/LOW): SEC-01 + SEC-03 (PAX
-  overflow guards — the memory-safety CRITICAL/HIGH), SEC-06 (https-only),
-  SEC-07 (malformed-sha → error), SEC-12 (re-validate GitHub URL), SEC-13
-  (streaming size cap), SEC-14 (alloc-cap reconcile). One cluster: untrusted
-  tarball + network + recipe input.
+- **0.11.2 — input hardening — DONE ✅**: SEC-01 + SEC-03 (PAX decimal/record
+  overflow guards + overflow-safe write bound — the memory-safety CRITICAL/HIGH),
+  SEC-06 (https-only with a loopback `http` carve-out), SEC-07 (malformed-sha →
+  error), SEC-12 (re-validate the resolved GitHub URL), SEC-13 (streaming size
+  cap via a counting sink, `FETCH_MAX_ARTIFACT` 256 MiB), SEC-14 (`SRC_MAX_BYTES`
+  = allocator ceiling + null-checked allocs). Regression tests added for the PAX
+  overflows + the scheme/sha policy; full suite + integration green.
 - **0.11.3 — sandbox hardening** (HIGH/MEDIUM/LOW): SEC-04 (map-write fail-closed),
   SEC-08 (surface/`--require-sandbox`), SEC-09 (confine to build root), SEC-10
   (aarch64 sleep), SEC-15 (`/dev` narrow); SEC-11 → add `CLONE_NEWPID` (the

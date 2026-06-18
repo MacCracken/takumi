@@ -87,17 +87,41 @@ fn name_has_only_allowed_chars(s) {
 }
 
 # ---------------------------------------------------------------------------
-# Source URL scheme — only plaintext http(s) download URLs are accepted.
+# Source URL scheme — https only, with a loopback carve-out for plaintext http.
 # Scheme check is case-sensitive; recipes must use lowercase.
 # ---------------------------------------------------------------------------
 
+# True if the host token at `h` equals `tok` and is followed by a host
+# terminator (end, ':' for a port, or '/' for the path) — so "127.0.0.1.evil"
+# does not match "127.0.0.1".
+fn _host_token_is(h, tok) {
+    var tl = strlen(tok);
+    if (memeq(h, tok, tl) == 0) { return 0; }
+    var c = load8(h + tl) & 0xFF;
+    if (c == 0 || c == 58 || c == 47) { return 1; }   # NUL, ':', '/'
+    return 0;
+}
+
+# Loopback host (never leaves the machine): 127.0.0.1, localhost, [::1].
+fn _url_host_is_loopback(h) {
+    if (_host_token_is(h, "127.0.0.1") == 1) { return 1; }
+    if (_host_token_is(h, "localhost") == 1) { return 1; }
+    if (_host_token_is(h, "[::1]") == 1) { return 1; }
+    return 0;
+}
+
+# Source URLs must be https. Plaintext `http://` is accepted ONLY for a loopback
+# host (local mirror / tests — the bytes never cross the network); remote http is
+# rejected so a source can't be fetched in cleartext (SEC-06).
 fn url_has_valid_scheme(s) {
     var len = strlen(s);
-    if (len >= 7) {
-        if (memeq(s, "http://", 7) == 1) { return 1; }
-    }
     if (len >= 8) {
         if (memeq(s, "https://", 8) == 1) { return 1; }
+    }
+    if (len >= 7) {
+        if (memeq(s, "http://", 7) == 1) {
+            if (_url_host_is_loopback(s + 7) == 1) { return 1; }
+        }
     }
     return 0;
 }
@@ -127,15 +151,16 @@ fn _cstr_has_slash(s) {
     return 0;
 }
 
-# Shared source-sha256 check (URL + GitHub kinds): empty -> error,
-# malformed hex -> warning (a short placeholder is common while drafting).
+# Shared source-sha256 check (URL + GitHub kinds): empty or malformed -> error.
+# A present-but-malformed digest is rejected early with a clear message rather
+# than failing late at the fetch gate (SEC-07).
 fn _validate_source_sha(sha, errors, warnings) {
     if (sha == 0) {
         vec_push(errors, "recipe has empty source sha256");
     } elif (strlen(sha) == 0) {
         vec_push(errors, "recipe has empty source sha256");
     } elif (sha256_is_lowercase_hex64(sha) == 0) {
-        vec_push(warnings, "source sha256 is not a valid lowercase 64-character hex digest");
+        vec_push(errors, "source sha256 is not a valid lowercase 64-character hex digest");
     }
     return 0;
 }

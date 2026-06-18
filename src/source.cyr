@@ -35,7 +35,10 @@ enum SrcErr {
 }
 
 # 512 MiB ceiling on both the archive and the decompressed output.
-enum SrcLimit { SRC_MAX_BYTES = 536870912; }
+# Max archive / decompressed size. Kept at the allocator ceiling (lib/alloc.cyr
+# ALLOC_MAX = 0x10000000 = 256 MiB): a larger value is a lie — alloc() would
+# return 0 for it (SEC-14). alloc returns are null-checked below regardless.
+enum SrcLimit { SRC_MAX_BYTES = 268435456; }
 
 # Mirror of the sankoch return codes we branch on (decompress returns
 # `0 - ERR_*`). Mirrored locally rather than referenced so the grow-retry
@@ -344,7 +347,9 @@ fn _pax_cstr(data, start, end) {
     return buf;
 }
 
-# Decimal value of data[start, end); -1 on empty / non-digit.
+# Decimal value of data[start, end); -1 on empty / non-digit / overflow.
+# (i64-max / 10 = 922337203685477580; reject before the multiply so a crafted
+# huge value can't wrap negative and bypass downstream bounds checks — SEC-01.)
 fn _pax_decimal(data, start, end) {
     var i = start;
     var v = 0;
@@ -352,6 +357,7 @@ fn _pax_decimal(data, start, end) {
     while (i < end) {
         var c = load8(data + i) & 0xFF;
         if (c < 48 || c > 57) { return 0 - 1; }
+        if (v > 922337203685477579) { return 0 - 1; }
         v = v * 10 + (c - 48);
         saw = 1;
         i = i + 1;
@@ -377,6 +383,7 @@ fn _pax_parse(data, len, rec) {
         while (i < len) {
             var c = load8(data + i) & 0xFF;
             if (c < 48 || c > 57) { break; }
+            if (rlen > 922337203685477579) { break; }   # overflow guard (SEC-03)
             rlen = rlen * 10 + (c - 48);
             sawd = 1;
             i = i + 1;
@@ -386,6 +393,7 @@ fn _pax_parse(data, len, rec) {
         if (i >= len) { break; }
         if ((load8(data + i) & 0xFF) != 32) { break; }
         var rec_end = ds + rlen;
+        if (rec_end < ds) { break; }       # defensive: never wrap below the start
         if (rec_end > len) { break; }
         var kstart = i + 1;
         var eq = 0 - 1;
@@ -440,6 +448,7 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
     if (sz <= 0) { return 0 - SRC_ERR_OPEN; }
     if (sz > SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
     var raw = alloc(sz);
+    if (raw == 0) { return 0 - SRC_ERR_TOO_LARGE; }
     if (file_read_all(archive_path_cstr, raw, sz) != sz) { return 0 - SRC_ERR_OPEN; }
 
     # 2. Sniff the compression envelope by magic, decompress to a plain tar.
@@ -462,6 +471,7 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
         if (isize > SRC_MAX_BYTES) { return 0 - SRC_ERR_TOO_LARGE; }
         var gcap = isize + 512;
         var gout = alloc(gcap);
+        if (gout == 0) { return 0 - SRC_ERR_TOO_LARGE; }
         var gn = gzip_decompress(raw, sz, gout, gcap);
         if (gn < 0) { return 0 - SRC_ERR_DECOMPRESS; }
         tar_buf = gout;
@@ -475,6 +485,7 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
         var done = 0;
         while (done == 0) {
             var out = alloc(cap);
+            if (out == 0) { return 0 - SRC_ERR_TOO_LARGE; }
             var dn = decompress(fmt, raw, sz, out, cap);
             if (dn >= 0) {
                 tar_buf = out;
@@ -599,7 +610,10 @@ fn extract_archive(archive_path_cstr, dest_dir_cstr) {
                     if (_mkdir_p(_dirname_cstr(sfull)) != 0) { return 0 - SRC_ERR_WRITE; }
                     if (sys_symlink(link, sfull) != 0) { return 0 - SRC_ERR_WRITE; }
                 } else {
-                    if (pos + esize > tar_len) { return 0 - SRC_ERR_TRUNCATED; }
+                    # Overflow-safe bound (pos <= tar_len): never compute
+                    # pos+esize (could wrap), and reject a negative esize (SEC-01).
+                    if (esize < 0) { return 0 - SRC_ERR_BAD_HEADER; }
+                    if (esize > tar_len - pos) { return 0 - SRC_ERR_TRUNCATED; }
                     var ffull = _join2(dest_dir_cstr, full);
                     if (_mkdir_p(_dirname_cstr(ffull)) != 0) { return 0 - SRC_ERR_WRITE; }
                     if (file_write_all(ffull, tar_buf + pos, esize) != esize) { return 0 - SRC_ERR_WRITE; }

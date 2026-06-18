@@ -29,11 +29,13 @@ enum FetchErr {
     FETCH_ERR_UNSUPPORTED = 5; # unknown source kind
 }
 
-# The artifact download streams to disk (no in-memory cap; bounded by the
-# total-ms wall clock). Only the GitHub release JSON is buffered — it's
-# small, so a 4 MiB cap is plenty.
+# The artifact download streams to disk, bounded by FETCH_MAX_ARTIFACT (the
+# counting sink) + the total-ms wall clock. The cap matches the extractor's
+# SRC_MAX_BYTES (256 MiB) — a download larger than we can extract is pointless.
+# Only the GitHub release JSON is buffered — small, so a 4 MiB cap is plenty.
 enum FetchLimit {
     FETCH_MAX_JSON = 4194304;
+    FETCH_MAX_ARTIFACT = 268435456;
 }
 
 # Wall-clock ceiling for a single source download (10 min). The streaming
@@ -94,11 +96,30 @@ fn _glob_match(pat, s) {
     return 1;
 }
 
-# Stream-download `url` over HTTPS straight to `dest`. The body is flushed
-# to the destination fd as it arrives — never buffered whole — so the source
-# size is unbounded (no in-memory cap) while the resident set stays fixed.
-# Redirects (GitHub release -> CDN) and TLS policy are honored; the only
-# size backstop is the total-ms wall clock. Returns 0, or 0 - FETCH_ERR_*.
+# Streaming sink (ctx = [fd, written, cap]): write each chunk to the fd, count
+# bytes, and abort once the cap is exceeded so an oversized/endless response
+# can't fill the disk (SEC-13). Returns 1 to continue, 0 - 1 to abort.
+fn _dl_capped_sink(ctx, buf, len) {
+    var written = load64(ctx + 8);
+    var cap = load64(ctx + 16);
+    if (written + len > cap) { return 0 - 1; }
+    var fd = load64(ctx + 0);
+    var off = 0;
+    while (off < len) {
+        var w = file_write(fd, buf + off, len - off);
+        if (w <= 0) { return 0 - 1; }
+        off = off + w;
+    }
+    store64(ctx + 8, written + len);
+    return 1;
+}
+
+# Stream-download `url` over HTTPS straight to `dest`. The body is flushed to the
+# destination fd as it arrives — never buffered whole (resident set stays fixed)
+# — and bounded by FETCH_MAX_ARTIFACT via the counting sink (the buffered
+# `max_response_bytes` does not apply to the streaming path). Redirects (GitHub
+# release -> CDN) and TLS policy are honored; the total-ms wall clock is the
+# other backstop. Returns 0, or 0 - FETCH_ERR_*.
 fn _sandhi_download_to_file(url, dest) {
     var opts = sandhi_http_options_new();
     sandhi_http_options_follow_redirects(opts, 1);
@@ -108,7 +129,11 @@ fn _sandhi_download_to_file(url, dest) {
     # 0644; O_WRONLY|O_CREAT|O_TRUNC. file_open remaps the flags per target.
     var fd = file_open(dest, O_WRONLY | O_CREAT | O_TRUNC, 420);
     if (fd < 0) { return 0 - FETCH_ERR_WRITE; }
-    var r = sandhi_http_download(url, fd, opts);
+    var ctx = alloc(24);
+    store64(ctx + 0, fd);
+    store64(ctx + 8, 0);
+    store64(ctx + 16, FETCH_MAX_ARTIFACT);
+    var r = sandhi_http_download_sink(url, &_dl_capped_sink, ctx, opts);
     file_close(fd);
 
     if (r == 0) { return 0 - FETCH_ERR_HTTP; }
@@ -190,6 +215,9 @@ fn fetch_source(src, dest_path) {
     if (k == SRC_KIND_GITHUB) {
         var url = _gh_resolve_asset_url(src_gh_repo(src), src_gh_asset(src));
         if (url == 0) { return 0 - FETCH_ERR_NO_ASSET; }
+        # The asset URL comes from the GitHub API JSON — re-validate its scheme
+        # (https / loopback) before fetching, like a recipe `url` (SEC-12).
+        if (url_has_valid_scheme(url) == 0) { return 0 - FETCH_ERR_HTTP; }
         return _sandhi_download_to_file(url, dest_path);
     }
     if (k == SRC_KIND_URL) {
