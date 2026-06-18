@@ -85,19 +85,19 @@ consumer.
 | SEC-01 | extract | PAX `size=` decimal overflow → bounds bypass → OOB heap read into output file | **CRITICAL** | **Fixed ✅ 0.11.2** |
 | SEC-02 | sign | Packages produced **unsigned** (`signing_seed = 0`) — no authenticity | **CRITICAL** | Fix 0.11.x (key mgmt) |
 | SEC-03 | extract | PAX record-length overflow → negative index → OOB heap-underflow read (DoS) | HIGH | **Fixed ✅ 0.11.2** |
-| SEC-04 | sandbox | userns uid/gid-map write failures ignored → silent `nobody` ownership / half-sandbox | HIGH | Fix 0.11.3 |
-| SEC-05 | format | `.ark` reader trusts length/offset fields unbounded → OOB/OOM in the consumer | HIGH | Fix 0.11.x |
+| SEC-04 | sandbox | userns uid/gid-map write failures ignored → silent `nobody` ownership / half-sandbox | HIGH | **Fixed ✅ 0.11.3** |
+| SEC-05 | format | `.ark` reader trusts length/offset fields unbounded → OOB/OOM in the consumer | HIGH | Fix 0.11.4 |
 | SEC-06 | fetch | `http://` accepted by the validator — contradicts the https-only invariant | MEDIUM | **Fixed ✅ 0.11.2** |
 | SEC-07 | validate | Malformed source `sha256` is a warning, not an error (builds late-fails) | MEDIUM | **Fixed ✅ 0.11.2** |
-| SEC-08 | sandbox | Landlock per-step apply failure is fail-open + unreported | MEDIUM | Fix 0.11.3 |
-| SEC-09 | sandbox | Landlock grants RW to **all** of `/tmp` (not the build root) + hidden `/tmp` coupling | MEDIUM | Fix 0.11.3 |
-| SEC-10 | sandbox | Poll sleep `syscall(7,…)` is not `poll` on aarch64 → busy-spin / wrong timeout | MEDIUM | Fix 0.11.3 |
-| SEC-11 | sandbox | Timeout escapable by a double-fork/`setsid` step (no PID namespace) | MEDIUM | Mitigate 0.11.3 (PID ns) / document |
+| SEC-08 | sandbox | Landlock per-step apply failure is fail-open + unreported | MEDIUM | **Fixed ✅ 0.11.3** |
+| SEC-09 | sandbox | Landlock grants RW to **all** of `/tmp` (not the build root) + hidden `/tmp` coupling | MEDIUM | **Fixed ✅ 0.11.3** |
+| SEC-10 | sandbox | Poll sleep `syscall(7,…)` is not `poll` on aarch64 → busy-spin / wrong timeout | MEDIUM | **Fixed ✅ 0.11.3** |
+| SEC-11 | sandbox | Timeout escapable by a double-fork/`setsid` step (no PID namespace) | MEDIUM | **Documented ✅ 0.11.3** (PID ns deferred; trusted-recipe residual) |
 | SEC-12 | fetch | GitHub `browser_download_url` not re-validated (scheme/host) before fetch | LOW | **Fixed ✅ 0.11.2** |
 | SEC-13 | fetch | Streaming download has no byte cap → disk-exhaustion DoS (bounded only by timeout) | LOW | **Fixed ✅ 0.11.2** |
 | SEC-14 | extract | `SRC_MAX_BYTES` (512 MiB) > allocator `ALLOC_MAX` (256 MiB) — cap is a lie, misleading error | LOW | **Fixed ✅ 0.11.2** |
-| SEC-15 | sandbox | `/dev` granted full RW incl. device/socket/FIFO creation (only `/dev/null`-class needed) | LOW | Fix 0.11.3 |
-| SEC-16 | format | `.ark` reader: manifest ints (`release`/`size_installed`/`build_date`) unvalidated on read | LOW | Fix 0.11.x |
+| SEC-15 | sandbox | `/dev` granted full RW incl. device/socket/FIFO creation (only `/dev/null`-class needed) | LOW | **Fixed ✅ 0.11.3** |
+| SEC-16 | format | `.ark` reader: manifest ints (`release`/`size_installed`/`build_date`) unvalidated on read | LOW | Fix 0.11.4 |
 | SEC-17 | extract | Regular-file writes lack `O_NOFOLLOW` (write-through in-tree symlink) — contained by lexical guard | INFO | Optional hardening |
 | SEC-18 | extract | gzip `ISIZE` reflects only the last member of a multi-member stream — fail-closed correctness limit | INFO | Optional (correctness) |
 | SEC-19 | build | Shell single-quoting (`_sh_squote`) — verified breakout-proof | INFO | No change (solid) |
@@ -256,10 +256,16 @@ CRITICALs lead.
   cap via a counting sink, `FETCH_MAX_ARTIFACT` 256 MiB), SEC-14 (`SRC_MAX_BYTES`
   = allocator ceiling + null-checked allocs). Regression tests added for the PAX
   overflows + the scheme/sha policy; full suite + integration green.
-- **0.11.3 — sandbox hardening** (HIGH/MEDIUM/LOW): SEC-04 (map-write fail-closed),
-  SEC-08 (surface/`--require-sandbox`), SEC-09 (confine to build root), SEC-10
-  (aarch64 sleep), SEC-15 (`/dev` narrow); SEC-11 → add `CLONE_NEWPID` (the
-  audit-warranted sandbox extra) or document. seccomp deferred post-1.0.
+- **0.11.3 — sandbox hardening — DONE ✅**: SEC-04 (userns map-write failure now
+  aborts the step — no silent `nobody` ownership), SEC-08 (sandbox-setup failures
+  warn to stderr + `--require-sandbox` fail-closed mode), SEC-09 (Landlock
+  confines to the **build root**, not all `/tmp`; `TMPDIR` redirected inside it),
+  SEC-10 (arch-correct sleep — `ppoll` on aarch64), SEC-15 (`/dev` narrowed to
+  read/write existing nodes). SEC-11 (timeout escape via double-fork) is
+  **documented** as a trusted-recipe residual — a PID namespace would close it
+  but needs a double-fork PID-1 reaper; deferred. seccomp deferred post-1.0.
+  Verified live: build-root confinement blocks an out-of-root `/tmp` write while
+  a real gcc compile still succeeds (TMPDIR redirect).
 - **0.11.4 — `.ark` reader robustness** (HIGH/LOW): SEC-05 + SEC-16 (bounded,
   validated parsing of untrusted packages).
 - **0.11.5 — package signing / key management** (CRITICAL): SEC-02 — a signing

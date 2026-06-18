@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.11.3] - 2026-06-17
+
+Security remediation, cluster 2 — **sandbox hardening**. Closes the audit's
+HIGH sandbox finding + four mediums + a low, and adds `--require-sandbox`. 868
+tests (was 859). See
+[security-audit-2026.md](docs/compliance/security-audit-2026.md).
+
+### Security
+
+- **SEC-04 (HIGH) — userns map failures no longer silent** (`src/sandbox.cyr`).
+  `_sandbox_apply_netns` now distinguishes "unshare refused" (clean, may run
+  un-isolated) from "unshare ok but uid/gid map write failed" (process mapped to
+  `nobody` — would mis-own files): the latter **always aborts the step**, never
+  runs degraded.
+- **SEC-08 (MEDIUM) — sandbox-setup failures are surfaced.** A layer that can't
+  be applied warns to stderr (`takumi: sandbox: WARNING …`); the new
+  **`--require-sandbox`** flag makes such a step **fail-closed** instead of
+  running degraded.
+- **SEC-09 (MEDIUM) — Landlock confines to the build root.** Writes are now
+  restricted to the build root (passed in) + read/write of existing `/dev`
+  nodes, not blanket `/tmp`; `TMPDIR` is pointed inside the build dir (build
+  prelude) so scratch stays confined. Removes the hidden "build root must be
+  under /tmp" coupling.
+- **SEC-10 (MEDIUM) — arch-correct timeout sleep.** The poll loop used
+  `syscall(7)` (= `poll`, x86_64 only); aarch64 now uses `ppoll` (73) — no
+  busy-spin / wrong wall clock on aarch64.
+- **SEC-15 (LOW) — `/dev` narrowed** to read/write existing nodes (`/dev/null`
+  etc.); no device/socket/FIFO creation or removal rights.
+- **SEC-11 (MEDIUM) — documented.** A step that double-forks / `setsid`s escapes
+  the timeout's process-group kill; a PID namespace would close it (needs a
+  double-fork PID-1 reaper) — deferred as a trusted-recipe residual, noted in
+  the sandbox header + audit.
+
+### Changed
+
+- Sandbox policy is now an `SbCfg` struct (`sbcfg_new`) threaded through
+  `exec_build` / `_run_step` / `exec_vec_sandboxed` (was positional flags),
+  carrying isolate / confine / require / build-root / timeout. `cmd_build` and
+  the CLI report which layers are active + the require mode.
+- Builder stamp + `takumi_version()` → 0.11.3.
+
+### Verified
+
+- Live: build-root confinement blocks a write to `/tmp` outside the build root
+  (normally user-writable) while `$PKG` writes succeed; a real GNU hello
+  `./configure && make && make install` still compiles + runs under the tighter
+  Landlock policy + `TMPDIR` redirect.
+- Tests (+9): `/dev` mask excludes make/remove; `SbCfg` round-trips its fields.
+
 ## [0.11.2] - 2026-06-17
 
 Security remediation, cluster 1 — **input hardening**. Closes the audit's two

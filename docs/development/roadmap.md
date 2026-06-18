@@ -197,11 +197,14 @@ runbook; sandbox extras are audit-informed.)
   malformed-sha → error (SEC-07), GitHub URL re-validate (SEC-12), streaming
   size cap via counting sink (SEC-13), `SRC_MAX_BYTES` = allocator ceiling +
   null-checked allocs (SEC-14). Regression tests added; 859 tests green.
-- **0.11.3 — Sandbox hardening** (audit cluster): fail-closed userns maps
-  (SEC-04 HIGH), surface Landlock apply-failure + `--require-sandbox` (SEC-08),
-  confine writes to the build root not all `/tmp` (SEC-09), aarch64 timeout
-  sleep (SEC-10), `/dev` narrow (SEC-15), PID namespace for the timeout (SEC-11);
-  seccomp deferred post-1.0.
+- [x] **0.11.3 — Sandbox hardening** (audit cluster). **Done.** userns
+  map-failure aborts the step (SEC-04 HIGH), sandbox-setup failures warn +
+  `--require-sandbox` fail-closed (SEC-08), Landlock confines to the build root
+  not all `/tmp` + `TMPDIR` redirect (SEC-09), arch-correct `ppoll` sleep on
+  aarch64 (SEC-10), `/dev` narrowed to existing nodes (SEC-15); SEC-11 (double-
+  fork timeout escape) documented as a trusted-recipe residual (PID ns
+  deferred). Sandbox policy refactored to an `SbCfg` struct. 868 tests; verified
+  live. seccomp deferred post-1.0.
 - **0.11.4 — `.ark` reader robustness** (audit cluster): bounded/validated
   parsing of untrusted packages (SEC-05 HIGH, SEC-16).
 - **0.11.5 — Package signing / key management** (audit cluster): supply a

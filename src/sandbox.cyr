@@ -1,41 +1,53 @@
 # takumi — build sandbox: hermetic, bounded build-step execution.
 #
 # Recipe build steps are arbitrary shell BY DESIGN (ADR 0005), run over
-# sha256-verified sources. This module adds two guarantees on top, both
-# composing the existing fork/exec/wait shape (lib/process.cyr's `exec_vec`,
-# lib/regression.cyr's bounded-run loop) — Linux, unprivileged:
+# sha256-verified sources. This module adds three guarantees on top, composing
+# the existing fork/exec/wait shape — Linux, unprivileged:
 #
 #   1. NETWORK ISOLATION (hermetic build). The step runs in a fresh network
 #      namespace with no external connectivity (only a down loopback). Sources
-#      are already fetched + verified before the build, so a build needs no
-#      network; cutting it makes builds hermetic (no surprise/un-pinned
-#      downloads) and removes a recipe's build-time fetch/exfil ability. The
-#      namespace is created UNPRIVILEGED via a user namespace
-#      (CLONE_NEWUSER|CLONE_NEWNET) with an *identity* uid/gid map, so the build
-#      keeps its real (non-root) identity and files land with correct ownership
-#      — matching takumi's no-root, DESTDIR-only build model.
+#      are already fetched + verified, so cutting the network makes builds
+#      hermetic and removes a build-time fetch/exfil path. Created UNPRIVILEGED
+#      via a user namespace (CLONE_NEWUSER|CLONE_NEWNET) with an *identity*
+#      uid/gid map, so files land with correct ownership. If the map write fails
+#      (would mis-own as nobody) the step is ALWAYS aborted, never run degraded.
 #
-#   2. WALL-CLOCK TIMEOUT. A runaway step is SIGKILLed — the whole process group
-#      (the child leads a new session via setsid, so `make`'s children die too)
-#      — after a fixed ceiling, so a hung/looping build can't wedge the builder.
+#   2. FILESYSTEM CONFINEMENT (Landlock). Writes are restricted to the build
+#      root (+ read/write of existing /dev nodes); the rest of the filesystem is
+#      read+exec. TMPDIR is pointed inside the build root (build prelude) so
+#      scratch stays confined. (ADR 0012.)
 #
-# Isolation is best-effort: if unprivileged user namespaces are unavailable
-# (EPERM — e.g. a kernel with userns disabled), the step still runs un-isolated;
-# the caller probes once (`sandbox_net_available`) and reports the mode. The
-# timeout ALWAYS applies. Model in docs/adr/0011-build-sandbox.md.
+#   3. WALL-CLOCK TIMEOUT. A runaway step is SIGKILLed by process group (the
+#      child leads a new session via setsid) after a fixed ceiling.
 #
-# SECURITY SCOPE: this is hermeticity + liveness hardening, NOT a containment
-# boundary against malicious recipes (recipes are trusted; the build is already
-# unprivileged + DESTDIR-only). Filesystem confinement (Landlock) and seccomp
-# syscall filtering are later bites (roadmap).
+# Isolation/confinement are best-effort + reported: if a layer is unavailable
+# the step runs degraded with a stderr WARNING — unless `--require-sandbox`
+# (SbCfg.require), which makes the step FAIL instead (fail-closed). The timeout
+# ALWAYS applies. Model in docs/adr/0011-build-sandbox.md + 0012.
+#
+# SECURITY SCOPE: hermeticity + confinement + liveness hardening, NOT a
+# containment boundary against malicious recipes (recipes are trusted; the build
+# is unprivileged + DESTDIR-only). KNOWN GAP (SEC-11): a step that double-forks /
+# setsid()s escapes the timeout's group-kill and can outlive the build — a PID
+# namespace would close it; deferred (trusted-recipe residual). seccomp syscall
+# filtering is a later bite.
 
-# unshare(2) is the only arch-varying number we need (CLONE_* and the poll-based
-# sleep are shared). x86_64 = 272; aarch64 = 97 (generic syscall table).
+# Arch-varying syscall numbers (CLONE_* + Landlock bits are shared). unshare:
+# x86_64 = 272, aarch64 = 97. The timeout sleep also differs: x86_64 has poll(7);
+# aarch64 has no `poll`, so it uses `ppoll`(73) with a timespec (SEC-10).
 #ifdef CYRIUS_ARCH_X86
 enum SandboxSysNr { SANDBOX_SYS_UNSHARE = 272; }
+fn _sandbox_sleep_ms(ms) { syscall(7, 0, 0, ms); return 0; }   # poll(NULL,0,ms)
 #endif
 #ifdef CYRIUS_ARCH_AARCH64
 enum SandboxSysNr { SANDBOX_SYS_UNSHARE = 97; }
+fn _sandbox_sleep_ms(ms) {
+    var ts = alloc(16);
+    store64(ts + 0, ms / 1000);
+    store64(ts + 8, (ms % 1000) * 1000000);   # tv_nsec
+    syscall(73, 0, 0, ts, 0);                  # ppoll(NULL, 0, &ts, NULL)
+    return 0;
+}
 #endif
 
 enum SandboxClone {
@@ -50,6 +62,44 @@ enum SandboxLimit {
     SANDBOX_TIMEOUT_MS = 3600000;   # 1 hour per build step
     SANDBOX_POLL_MS = 100;
 }
+
+# Sandbox policy for a build step, built once by the CLI and threaded through
+# exec_build -> _run_step -> exec_vec_sandboxed (avoids a long positional list
+# and leaves room for future layers, e.g. seccomp).
+#   require = 1 -> fail-closed: if a requested layer can't be applied, the step
+#                  fails rather than running degraded.
+#   root    = the Landlock read-write build root (cstr; 0 -> "/tmp" fallback).
+enum SbCfg {
+    SBC_ISOLATE = 0;     # network namespace (1/0)
+    SBC_CONFINE = 8;     # Landlock fs confinement (1/0)
+    SBC_REQUIRE = 16;    # fail-closed (1/0)
+    SBC_ROOT = 24;       # build-root cstr (0 = fallback)
+    SBC_TIMEOUT = 32;    # per-step wall-clock ms
+    SBC_SIZE = 40;
+}
+
+fn sbcfg_new(isolate_net, confine_fs, require, build_root, timeout_ms) {
+    var c = alloc(SBC_SIZE);
+    store64(c + SBC_ISOLATE, isolate_net);
+    store64(c + SBC_CONFINE, confine_fs);
+    store64(c + SBC_REQUIRE, require);
+    store64(c + SBC_ROOT, build_root);
+    store64(c + SBC_TIMEOUT, timeout_ms);
+    return c;
+}
+
+# Write a one-line warning to stderr (fd 2) from the forked child before exec,
+# so a degraded/aborted sandbox setup is never silent (SEC-04 / SEC-08).
+fn _sandbox_warn(msg) {
+    syscall(1, 2, "takumi: sandbox: ", 17);
+    syscall(1, 2, msg, strlen(msg));
+    syscall(1, 2, "\n", 1);
+    return 0;
+}
+
+# Exit code a forked child uses when a required sandbox layer can't be applied
+# (distinct from a build step's own codes; the stderr warning explains it).
+enum SandboxExit { SANDBOX_SETUP_FAIL = 125; }
 
 # Write `len` bytes of `data` to `path` (a /proc map file). Best-effort:
 # returns 0 on full write, 0 - 1 otherwise.
@@ -74,8 +124,14 @@ fn _sandbox_map_line(id) {
 }
 
 # Child-side: enter a fresh user+network namespace and install identity maps.
-# Returns 0 if isolated, 0 - 1 if unshare was refused (caller proceeds
-# un-isolated). Must be called in the forked child, before execve.
+# Returns:
+#   0      isolated + identity-mapped (good)
+#   0 - 1  unshare refused — NOT isolated, but still in the original (correctly
+#          owned) namespace; the caller may proceed un-isolated (best-effort)
+#   0 - 2  unshare succeeded but a uid/gid-map write FAILED — the process is now
+#          mapped to `nobody` and would silently mis-own every file. The caller
+#          MUST abort (there is no safe "proceed"). (SEC-04)
+# Must be called in the forked child, before execve.
 fn _sandbox_apply_netns() {
     var uid = sys_getuid();
     var gid = sys_getgid();
@@ -83,11 +139,12 @@ fn _sandbox_apply_netns() {
         return 0 - 1;
     }
     # gid_map may only be written after denying setgroups in the new userns.
+    # All three are now load-bearing: a failure here leaves us mapped to nobody.
     _sandbox_write_file("/proc/self/setgroups", "deny", 4);
     var um = _sandbox_map_line(uid);
-    _sandbox_write_file("/proc/self/uid_map", um, strlen(um));
+    if (_sandbox_write_file("/proc/self/uid_map", um, strlen(um)) != 0) { return 0 - 2; }
     var gm = _sandbox_map_line(gid);
-    _sandbox_write_file("/proc/self/gid_map", gm, strlen(gm));
+    if (_sandbox_write_file("/proc/self/gid_map", gm, strlen(gm)) != 0) { return 0 - 2; }
     return 0;
 }
 
@@ -148,8 +205,12 @@ fn _ll_handled() {
 }
 # Read + traverse + execute (no write/create/remove): the whole tree.
 fn _ll_ro() { return LL_READ_FILE | LL_READ_DIR | LL_EXECUTE; }
-# Full read+write+create+remove: the build/temp/dev areas.
+# Full read+write+create+remove: the build root (where the build legitimately
+# writes its tree + DESTDIR).
 fn _ll_rw() { return _ll_handled(); }
+# Device nodes: read/write existing nodes (/dev/null, /dev/zero, …) only — no
+# create/remove/mknod rights on /dev (SEC-15).
+fn _ll_dev() { return LL_READ_FILE | LL_WRITE_FILE; }
 
 # Add one PATH_BENEATH rule (open an O_PATH fd to `path`, grant `allowed`).
 # Returns 0, or 0 - 1 if the path can't be opened or the rule is rejected.
@@ -173,12 +234,16 @@ fn sandbox_fs_available() {
     return 0;
 }
 
-# Child-side: confine writes to the build/temp area. The whole filesystem is
-# read+exec; `/tmp` (which holds the build root + DESTDIR) and `/dev` (e.g.
-# /dev/null) are read-write. Returns 0 if confinement was applied, 0 - 1 if it
-# couldn't be (kernel/setup) — caller proceeds unconfined (best-effort). Must
-# run in the forked child, before execve.
-fn _sandbox_apply_landlock() {
+# Child-side: confine writes to `build_root` (+ read/write existing /dev nodes);
+# the whole filesystem stays read+exec. Writes are restricted to the actual
+# build area — not blanket `/tmp` — so a step can't touch other builds' trees,
+# sockets, or lockfiles (SEC-09); `TMPDIR` is pointed inside the build root by
+# the build prelude so scratch stays confined. `build_root` 0 -> "/tmp" fallback.
+# Returns 0 if confinement was applied, 0 - 1 if it couldn't be (kernel/setup) —
+# the caller decides (best-effort vs require). Must run in the child before exec.
+fn _sandbox_apply_landlock(build_root) {
+    var root = build_root;
+    if (root == 0) { root = "/tmp"; }
     var attr = alloc(8);
     store64(attr, _ll_handled());
     var rfd = sys_landlock_create_ruleset(attr, 8, 0);
@@ -186,8 +251,8 @@ fn _sandbox_apply_landlock() {
     # A broken (partial) ruleset would wedge the build, so any add failure
     # aborts confinement rather than restricting with a half-built policy.
     if (_sandbox_landlock_add(rfd, "/", _ll_ro()) != 0) { sys_close(rfd); return 0 - 1; }
-    if (_sandbox_landlock_add(rfd, "/tmp", _ll_rw()) != 0) { sys_close(rfd); return 0 - 1; }
-    if (_sandbox_landlock_add(rfd, "/dev", _ll_rw()) != 0) { sys_close(rfd); return 0 - 1; }
+    if (_sandbox_landlock_add(rfd, root, _ll_rw()) != 0) { sys_close(rfd); return 0 - 1; }
+    if (_sandbox_landlock_add(rfd, "/dev", _ll_dev()) != 0) { sys_close(rfd); return 0 - 1; }
     if (sys_prctl(LL_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) { sys_close(rfd); return 0 - 1; }
     var ret = sys_landlock_restrict_self(rfd, 0);
     sys_close(rfd);
@@ -196,12 +261,14 @@ fn _sandbox_apply_landlock() {
 }
 
 # Run argv (a vec of cstr; argv[0] is the binary) with an empty environment,
-# bounded by `timeout_ms`, optionally in a fresh network namespace
-# (`isolate_net` = 1) and/or under Landlock filesystem confinement
-# (`confine_fs` = 1). The child leads a new session so a timeout SIGKILLs its
-# whole process group. Returns the child's exit code (0..255), 128 + signal if
-# it was signalled, 0 - 1 on fork/spawn failure, or 0 - 2 on timeout.
-fn exec_vec_sandboxed(args, timeout_ms, isolate_net, confine_fs) {
+# under the sandbox policy `cfg` (SbCfg). The child leads a new session so a
+# timeout SIGKILLs its whole process group. Sandbox-setup outcomes are never
+# silent: a half-isolated userns (mapped to nobody) ALWAYS aborts the step; a
+# requested layer that can't be applied aborts under `require` and otherwise
+# warns to stderr and runs degraded (SEC-04 / SEC-08). Returns the child's exit
+# code (0..255), 128 + signal if signalled, 0 - 1 on fork/spawn failure, or
+# 0 - 2 on timeout.
+fn exec_vec_sandboxed(args, cfg) {
     var argc = vec_len(args);
     if (argc < 1) { return 0 - 1; }
     var cmd = vec_get(args, 0);
@@ -215,12 +282,41 @@ fn exec_vec_sandboxed(args, timeout_ms, isolate_net, confine_fs) {
     var envp = alloc(8);
     store64(envp, 0);
 
+    var isolate_net = load64(cfg + SBC_ISOLATE);
+    var confine_fs = load64(cfg + SBC_CONFINE);
+    var require = load64(cfg + SBC_REQUIRE);
+    var build_root = load64(cfg + SBC_ROOT);
+    var timeout_ms = load64(cfg + SBC_TIMEOUT);
+
     var pid = sys_fork();
     if (pid < 0) { return 0 - 1; }
     if (pid == 0) {
         sys_setsid();                                   # new process group for group-kill
-        if (isolate_net == 1) { _sandbox_apply_netns(); }    # best-effort hermeticity
-        if (confine_fs == 1) { _sandbox_apply_landlock(); }  # best-effort fs confinement
+        if (isolate_net == 1) {
+            var nr = _sandbox_apply_netns();
+            if (nr == 0 - 2) {
+                # Half-isolated (mapped to nobody): files would be mis-owned.
+                # Never proceed, regardless of `require`.
+                _sandbox_warn("network isolation: uid/gid map failed; aborting (would mis-own files)");
+                sys_exit(SANDBOX_SETUP_FAIL);
+            }
+            if (nr != 0) {
+                if (require == 1) {
+                    _sandbox_warn("network isolation unavailable and --require-sandbox set; aborting");
+                    sys_exit(SANDBOX_SETUP_FAIL);
+                }
+                _sandbox_warn("WARNING: network isolation unavailable; step runs with host network");
+            }
+        }
+        if (confine_fs == 1) {
+            if (_sandbox_apply_landlock(build_root) != 0) {
+                if (require == 1) {
+                    _sandbox_warn("filesystem confinement unavailable and --require-sandbox set; aborting");
+                    sys_exit(SANDBOX_SETUP_FAIL);
+                }
+                _sandbox_warn("WARNING: filesystem confinement could not be applied; step runs unconfined");
+            }
+        }
         sys_execve(cmd, argv, envp);
         sys_exit(127);
     }
@@ -235,10 +331,12 @@ fn exec_vec_sandboxed(args, timeout_ms, isolate_net, confine_fs) {
             if (WIFSIGNALED(st) == 1) { return 128 + WTERMSIG(st); }
             return 0 - 1;
         }
-        syscall(7, 0, 0, SANDBOX_POLL_MS);              # poll(NULL,0,100ms) sleep (lib/regression.cyr)
+        _sandbox_sleep_ms(SANDBOX_POLL_MS);             # arch-correct sleep (SEC-10)
         elapsed = elapsed + SANDBOX_POLL_MS;
     }
     # Timeout: SIGKILL the build's whole process group, reap the leader, report.
+    # NOTE: a step that double-forks / setsid()s escapes the group and survives
+    # the kill (no PID namespace yet — SEC-11; trusted-recipe residual, documented).
     sys_kill(0 - pid, 9);
     sys_waitpid(pid, &stbuf, 0);
     return 0 - 2;

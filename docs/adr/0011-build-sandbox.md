@@ -94,3 +94,13 @@ helpers and is the likely home for the *later* bites, but pulling it now for one
 - **Fail-closed when userns is unavailable** — rejected as the default (would
   make takumi unusable on hardened kernels); exposed transparently instead, with
   a future opt-in flag.
+
+## Amendment (0.11.3, audit SEC-04 / SEC-08 / SEC-10 / SEC-11)
+
+Hardening from the pre-v1 audit: a userns uid/gid-map write failure (process
+mapped to `nobody`) now **aborts the step** rather than running degraded
+(SEC-04); sandbox-setup failures **warn to stderr** and `--require-sandbox`
+makes them **fail-closed** (SEC-08); the timeout poll sleep is **arch-correct**
+(`ppoll` on aarch64, SEC-10). Known residual (SEC-11): a step that double-forks /
+`setsid`s escapes the process-group timeout kill — a PID namespace would close it
+(deferred; trusted-recipe residual).

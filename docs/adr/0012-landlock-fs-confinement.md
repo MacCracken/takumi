@@ -92,3 +92,13 @@ Landlock, transparently.
   composes cleanly with the existing per-step fork.
 - **Confine to only `$PKG`** — would break the common cases of writing into the
   extracted build tree and using `/tmp` scratch; revisit as a tighter opt-in.
+
+## Amendment (0.11.3, audit SEC-09 / SEC-15)
+
+The original policy granted read-write to **all of `/tmp`** + full `/dev`. The
+security audit flagged this as broader than the stated guarantee. Revised:
+Landlock now grants read-write on the **build root** passed from the CLI (the
+build trees + DESTDIR live under it), `TMPDIR` is pointed inside the build dir so
+build-tool scratch stays confined, and `/dev` is narrowed to **read/write of
+existing nodes** (no `MAKE_*`/`REMOVE_*`). Per-step apply failure is now surfaced
+(stderr warning) and, under `--require-sandbox`, fail-closed (SEC-08).

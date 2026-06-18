@@ -14,12 +14,14 @@
 # runs the full pipeline (fetch → verify → extract → patch → build → package)
 # and exits 0/1. `--keep-going` (-k) attempts every package, skips a failed
 # package's dependents, and prints a built/failed/skipped summary (for driving a
-# whole base-system set). See docs/adr/0003-cli-surface.md and the
-# docs/guides/building-packages.md + base-system-build.md guides.
+# whole base-system set). `--require-sandbox` makes a step fail if it can't be
+# network-isolated / filesystem-confined (fail-closed). See
+# docs/adr/0003-cli-surface.md and the docs/guides/building-packages.md +
+# base-system-build.md guides.
 
 # Single source of the CLI version string. Keep in sync with VERSION,
 # cyrius.cyml, and the src/package.cyr builder stamp.
-fn takumi_version() { return "0.11.2"; }
+fn takumi_version() { return "0.11.3"; }
 
 # --- small output helpers ---------------------------------------------
 
@@ -51,7 +53,8 @@ fn _print_usage() {
     println("  list <dir>                  list recipes in a directory");
     println("  order <dir>                 print topological build order");
     println("  build <dir> [-x] [-k]       plan a build, or run it (--execute) into a fake-root");
-    println("                              (--keep-going: build all, skip a failed pkg's deps, then summarize)");
+    println("                              (--keep-going: build all, skip a failed pkg's deps, then summarize;");
+    println("                               --require-sandbox: fail a step that can't be isolated/confined)");
     println("  version                     print version");
     println("  help                        show this help");
     return 0;
@@ -211,7 +214,7 @@ fn _ark_out_path(out_dir, name) {
 # non-local) -> patch -> build (sandboxed) -> package. Prints its own
 # per-package error (incl. the failing phase) on failure. Returns 0 on success,
 # 1 on any failure.
-fn _cli_build_one(r, name, patch_dir, out_dir, isolate, confine) {
+fn _cli_build_one(r, name, patch_dir, out_dir, cfg) {
     var ctx = stage_build_dirs(_cli_build_root(), out_dir, name, 0, r);
     if (ctx == 0) {
         _cli_say2("build: staging failed: ", name);
@@ -241,7 +244,7 @@ fn _cli_build_one(r, name, patch_dir, out_dir, isolate, confine) {
         _cli_say2("build: patch failed: ", name);
         return 1;
     }
-    var entry = exec_build(ctx, clock_epoch_secs(), isolate, confine);
+    var entry = exec_build(ctx, clock_epoch_secs(), cfg);
     if (ble_status(entry) == BS_FAILED) {
         _cli_say2("build: FAILED: ", name);
         _cli_say2("  ", ble_fail_msg(entry));
@@ -288,8 +291,9 @@ fn _cli_name_list(label, names) {
 }
 
 # Probe + report which sandbox layers this host supports (steps are timeout-
-# bounded regardless; see src/sandbox.cyr). Returns isolate<<1 | confine.
-fn _cli_sandbox_report() {
+# bounded regardless; see src/sandbox.cyr). `require` = fail-closed mode. Returns
+# the SbCfg policy used for every step.
+fn _cli_sandbox_report(require) {
     var isolate = sandbox_net_available();
     var confine = sandbox_fs_available();
     if (isolate == 1) {
@@ -298,11 +302,17 @@ fn _cli_sandbox_report() {
         println("build: sandbox network isolation: unavailable (no unprivileged user namespaces)");
     }
     if (confine == 1) {
-        println("build: sandbox filesystem confinement: active (Landlock; writes limited to the build area)");
+        println("build: sandbox filesystem confinement: active (Landlock; writes limited to the build root)");
     } else {
         println("build: sandbox filesystem confinement: unavailable (no Landlock); steps still time-bounded");
     }
-    return isolate * 2 + confine;
+    if (require == 1) {
+        println("build: sandbox: --require-sandbox set (a step that can't be isolated/confined fails)");
+        if (isolate == 0 || confine == 0) {
+            println("build: WARNING: --require-sandbox set but a layer is unavailable; affected steps will fail");
+        }
+    }
+    return sbcfg_new(isolate, confine, require, _cli_build_root(), SANDBOX_TIMEOUT_MS);
 }
 
 # Execute the build for each recipe in topo order (called when --execute is set,
@@ -310,12 +320,11 @@ fn _cli_sandbox_report() {
 # failure stops the run (exit 1). With `keep_going` = 1, every package is
 # attempted, a failed package's dependents are skipped (not cascade-failed), and
 # a built/failed/skipped summary is printed; exit 1 if anything failed.
-fn _cli_build_execute(map, order, patch_dir, keep_going) {
+# `require` = `--require-sandbox` (fail a step that can't be isolated/confined).
+fn _cli_build_execute(map, order, patch_dir, keep_going, require) {
     var out_dir = _cli_build_out();
     _mkdir_p(out_dir);
-    var modes = _cli_sandbox_report();
-    var isolate = modes / 2;
-    var confine = modes & 1;
+    var cfg = _cli_sandbox_report(require);
 
     var total = vec_len(order);
     var built = 0;
@@ -335,7 +344,7 @@ fn _cli_build_execute(map, order, patch_dir, keep_going) {
             vec_push(skipped_names, name);
             vec_push(tainted, name);
         } else {
-            if (_cli_build_one(r, name, patch_dir, out_dir, isolate, confine) == 0) {
+            if (_cli_build_one(r, name, patch_dir, out_dir, cfg) == 0) {
                 built = built + 1;
             } else {
                 if (keep_going == 0) { return 1; }
@@ -367,7 +376,7 @@ fn _cli_build_execute(map, order, patch_dir, keep_going) {
     return 0;
 }
 
-fn cmd_build(dir, execute, keep_going) {
+fn cmd_build(dir, execute, keep_going, require) {
     if (is_dir(str_from(dir)) == 0) {
         _cli_say2("build: not a directory: ", dir);
         return 1;
@@ -401,7 +410,7 @@ fn cmd_build(dir, execute, keep_going) {
         i = i + 1;
     }
     if (execute == 1) {
-        return _cli_build_execute(map, order, dir, keep_going);
+        return _cli_build_execute(map, order, dir, keep_going, require);
     }
     println("build execution: re-run with --execute (runs unprivileged into a fake-root)");
     return 2;
@@ -438,6 +447,7 @@ fn cli_dispatch(args) {
     if (streq(cmd, "build") == 1) {
         var ex = 0;
         var kg = 0;
+        var rq = 0;
         var bdir = 0;
         var k = 1;
         while (k < n) {
@@ -448,13 +458,17 @@ fn cli_dispatch(args) {
                 if (streq(a, "--keep-going") == 1 || streq(a, "-k") == 1) {
                     kg = 1;
                 } else {
-                    if (bdir == 0) { bdir = a; }
+                    if (streq(a, "--require-sandbox") == 1) {
+                        rq = 1;
+                    } else {
+                        if (bdir == 0) { bdir = a; }
+                    }
                 }
             }
             k = k + 1;
         }
         if (bdir == 0) { println("build: missing <dir>"); return 2; }
-        return cmd_build(bdir, ex, kg);
+        return cmd_build(bdir, ex, kg, rq);
     }
     _cli_say2("unknown command: ", cmd);
     _print_usage();
