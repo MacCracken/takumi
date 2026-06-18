@@ -44,6 +44,14 @@ tests (was 859). See
 
 ### Changed
 
+- **Sandbox availability probes now validate the *complete* setup**, not just
+  the first syscall: `sandbox_net_available` runs the full unshare + uid/gid-map
+  writes, and `sandbox_fs_available` runs the full Landlock ruleset +
+  `restrict_self` — each in a throwaway child. So `isolate`/`confine` reflect
+  reality: a host that allows `unshare(CLONE_NEWUSER)` but refuses the `uid_map`
+  write (some CI kernels) is reported **unavailable** and runs un-isolated,
+  rather than passing the probe and then aborting every step on the SEC-04
+  guard. This is what makes the SEC-04 fail-closed safe across hosts.
 - Sandbox policy is now an `SbCfg` struct (`sbcfg_new`) threaded through
   `exec_build` / `_run_step` / `exec_vec_sandboxed` (was positional flags),
   carrying isolate / confine / require / build-root / timeout. `cmd_build` and

@@ -148,16 +148,19 @@ fn _sandbox_apply_netns() {
     return 0;
 }
 
-# Probe (once per build) whether unprivileged user+network namespaces are
-# available on this host: fork a child that only attempts the unshare and
-# exits 0 on success. Returns 1 if isolation is available, else 0.
+# Probe (once per build) whether unprivileged user+network isolation is fully
+# usable on this host: fork a child that runs the COMPLETE setup (unshare + the
+# uid/gid-map writes) and exits 0 only if it all succeeds. Testing the full path
+# — not just `unshare` — is essential: some kernels allow `unshare(CLONE_NEWUSER)`
+# but refuse the uid_map write, which would leave a real build mapped to `nobody`
+# (SEC-04 aborts that). By probing the whole thing, `isolate` accurately reflects
+# reality: where maps fail we report unavailable and run un-isolated rather than
+# aborting every step. Returns 1 if isolation is available, else 0.
 fn sandbox_net_available() {
     var pid = sys_fork();
     if (pid < 0) { return 0; }
     if (pid == 0) {
-        if (syscall(SANDBOX_SYS_UNSHARE, SANDBOX_CLONE_NEWUSER | SANDBOX_CLONE_NEWNET) < 0) {
-            sys_exit(1);
-        }
+        if (_sandbox_apply_netns() != 0) { sys_exit(1); }
         sys_exit(0);
     }
     var stbuf[1];
@@ -226,11 +229,24 @@ fn _sandbox_landlock_add(ruleset_fd, path, allowed) {
     return 0;
 }
 
-# Probe (parent-side, no side effects) whether Landlock is available: the
-# version-query form of create_ruleset returns the supported ABI (>= 1) or
-# -errno (ENOSYS / EOPNOTSUPP on an old or LSM-disabled kernel).
+# Probe (once per build) whether Landlock confinement is fully usable: fork a
+# child that runs the COMPLETE apply (create ruleset + add rules + prctl +
+# restrict_self, confined to "/tmp" as a throwaway root) and exits 0 only if it
+# all succeeds. Like the netns probe, this tests the real path — not just the
+# version query, which can report an ABI on a kernel where restrict_self is
+# nonetheless refused — so `confine` accurately reflects reality. Returns 1 if
+# confinement is available, else 0.
 fn sandbox_fs_available() {
-    if (sys_landlock_create_ruleset(0, 0, LL_CREATE_RULESET_VERSION) >= 1) { return 1; }
+    var pid = sys_fork();
+    if (pid < 0) { return 0; }
+    if (pid == 0) {
+        if (_sandbox_apply_landlock("/tmp") != 0) { sys_exit(1); }
+        sys_exit(0);
+    }
+    var stbuf[1];
+    sys_waitpid(pid, &stbuf, 0);
+    var st = load32(&stbuf);
+    if (WIFEXITED(st) == 1) { if (WEXITSTATUS(st) == 0) { return 1; } }
     return 0;
 }
 
