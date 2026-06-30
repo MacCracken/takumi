@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.0.1] — 2026-06-30 — mkfixture: build symlink-bearing `.ark` fixtures
+
+### Added
+
+- **`tests/mkfixture` — a host tool that builds a `.ark` from a package dir.**
+  Walks a package fake-root via `create_file_list` (auto SHA-256 + symlink
+  classification through `lstat`/`readlink`), hand-builds a minimal manifest, and
+  `ark_write`s an unsigned `.ark`. Built to produce the symlink-bearing fixture
+  (`/lib/libfoo.so.1` + `/lib/libfoo.so` → `libfoo.so.1`) that proved the ark v2 M3
+  on-agnos `.ark`-with-symlinks install round-trip (`agnos/scripts/ark-install-smoke.sh`).
+  Exercises `ark_write`'s symlink-entry path end to end. No change to takumi's
+  shipped build pipeline.
+
 ## [1.0.0] - 2026-06-17
 
 First stable release. takumi builds `.ark` packages from CYML recipes for AGNOS:
