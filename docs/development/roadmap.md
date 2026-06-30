@@ -33,6 +33,36 @@ The build sandbox ships with network isolation + Landlock filesystem confinement
 - [ ] **Key management ergonomics** — key rotation guidance; optional
       hardware-backed / external signer.
 
+## Sovereign build on AGNOS (ark v2 path — M5/M6, server-stage)
+
+takumi's share of the **ark v2 sovereignty path** — the BUILD half of self-hosting
+("build agnos on agnos"), the deepest gate. Orchestration spine:
+[`agnosticos/docs/development/planning/ark-v2-sovereignty-path.md`](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/ark-v2-sovereignty-path.md).
+**Server-stage** (agnos has no shell/fork/namespace), gated on the agnos build-surface
+items filed as **agnos 1.51.x (c)/(d)/(e)**. Today every build step runs via
+`exec_vec(['/bin/sh','-c', wrapped])` (`src/build.cyr:25,136,236`) + shells out to
+`/bin/rm`, `patch -p1` (`build.cyr:155`); the sandbox needs `sys_fork`×4 /
+`unshare(CLONE_NEWUSER|NEWNET)` / Landlock / `/proc/*/uid_map` — agnos has none.
+
+- [ ] **M5 — agnos-native build-step executor**: replace `/bin/sh -c` with a structured
+      step executor over agnos's exec surface only (`spawn#3`/`execwait#37`/`spawn_path#43`
+      run-to-completion ELF + `exec_redirect#62` + `waitpid#4`). **Needs agnos 1.51.x:**
+      nested exec from a spawned proc (execwait#37 refuses re-entry → drive `spawn_path#43`
+      + poll-`waitpid#4`), and argv/env cap raises (127 B path+argv, 1024 B/16-entry env are
+      too small for build invocations). Drop the `/bin/rm`/`patch` shell-outs for native FS ops.
+- [ ] **Build confinement on agnos**: either an **agnos-native capability-bounded sandbox**
+      (matches the capability-per-action posture; **converges with Phase 20 / agnos 1.51.x (e)
+      "Native sandbox-confinement primitives" — consume that, don't double-build**), or an
+      explicit no-op-with-warning at server bring-up. Resolve what `--require-sandbox`
+      fail-closed *means* on agnos.
+- [ ] **Native store/index writer (M2 producer side)**: index built `.ark`s into the
+      content-addressed local store + signed native index nous/ark resolve against (the
+      producer gate that makes M2's store non-empty). Define the format with zugot.
+- [ ] **M6 — self-host**: drive zugot's `build-order.txt` (225-pkg topo) through the native
+      executor on a booted agnos; the `marketplace/MacCracken/*` set (builds via `cyrius build`)
+      is the first proving ground. Acceptance: agnos rebuilds a slice of its own base from
+      zugot recipes, indexes the `.ark`s natively, nous resolves, ark installs — apt-free, QEMU + iron.
+
 ## Recipe + build features
 
 - [ ] Parallel builds for independent packages

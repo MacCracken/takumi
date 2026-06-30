@@ -1,6 +1,6 @@
 [package]
 name = "takumi"
-version = "1.0.0"
+version = "1.0.1"
 description = "takumi — package build system for AGNOS (.ark packages from CYML recipes)"
 license = "GPL-3.0-only"
 language = "cyrius"

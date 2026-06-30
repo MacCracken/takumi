@@ -1,0 +1,65 @@
+# mkfixture — build a symlink-bearing `.ark` for the ark M3 on-agnos install test.
+#
+# HOST tool (not --agnos). Walks $1 (a package fake-root containing a regular
+# file + a host symlink), letting takumi's create_file_list classify the symlink
+# as ARK_FT_SYMLINK (via lstat/readlink) and SHA-256 the regular file, then hand-
+# builds a minimal manifest and ark_write()s an UNSIGNED `.ark` to $2.
+#
+# Usage: mkfixture <package_dir> <out.ark>
+# Built against takumi's own modules (same include chain as src/main.cyr, minus
+# the cli/build/engine layers we don't need).
+
+include "src/types.cyr"
+include "src/validate.cyr"
+include "src/topo.cyr"
+include "src/flags.cyr"
+include "src/recipe.cyr"
+include "src/parse.cyr"
+include "src/ark.cyr"
+include "src/package.cyr"
+include "src/ark_format.cyr"
+
+fn main(): i64 {
+    args_init();                 # populate argc()/argv() (lib/args.cyr)
+    if (argc() < 3) {
+        syscall(1, 2, "usage: mkfixture <package_dir> <out.ark>\n", 41);
+        return 2;
+    }
+    var pkgdir = argv(1);
+    var outark = argv(2);
+
+    # Walk the package dir: regular files get SHA-256'd, symlinks become
+    # ARK_FT_SYMLINK entries carrying their readlink target.
+    var entries = create_file_list(pkgdir);
+
+    # Minimal manifest — set EVERY field (man_alloc does not zero), so
+    # _man_to_toml serializes a complete, parseable [manifest] section.
+    var man = man_alloc();
+    man_set_name(man, "libfoo");
+    man_set_version(man, "1.0.0");
+    man_set_release(man, 1);
+    man_set_description(man, "ark M3 symlink round-trip fixture");
+    man_set_arch(man, "x86_64");
+    man_set_size_installed(man, sum_installed_size(entries));
+    man_set_build_date(man, 0);
+    man_set_builder(man, "takumi-mkfixture");
+    man_set_source_url(man, "");
+    man_set_source_hash(man, "");
+    man_set_license(man, "GPL-3.0-only");
+    man_set_groups(man, vec_new());
+    man_set_depends(man, vec_new());
+
+    # Unsigned (signing_seed = 0).
+    var rc = ark_write(man, entries, pkgdir, outark, 0);
+    if (rc != 0) {
+        syscall(1, 2, "mkfixture: ark_write FAILED\n", 28);
+        return 1;
+    }
+    syscall(1, 1, "mkfixture: wrote ", 17);
+    syscall(1, 1, outark, strlen(outark));
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+
+fn _entry(): i64 { var r = main(); syscall(SYS_EXIT, r); return 0; }
+_entry();
